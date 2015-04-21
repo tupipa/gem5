@@ -52,7 +52,8 @@ os_types = { 'alpha' : [ 'linux' ],
                          'android-gingerbread',
                          'android-ics',
                          'android-jellybean',
-                         'android-kitkat' ],
+                         'android-kitkat',
+                         'freebsd' ],
            }
 
 class CowIdeDisk(IdeDisk):
@@ -207,12 +208,14 @@ def makeArmSystem(mem_mode, machine_type, num_cpus=1, mdesc=None,
                   external_memory=""):
     assert machine_type
 
+    freebsd = True
+
     if bare_metal:
         self = ArmSystem()
-    else:
+    elif freebsd:
         self = FreebsdArmSystem()
-	''' Uncomment for Linux full system mode '''
-        # self = LinuxArmSystem()
+    else:
+        self = LinuxArmSystem()
 
     if not mdesc:
         # generic system
@@ -293,7 +296,10 @@ def makeArmSystem(mem_mode, machine_type, num_cpus=1, mdesc=None,
         self.realview.uart.end_on_eot = True
     else:
         if machine_type == "VExpress_EMM64":
-            self.kernel = binary('vmlinux.aarch64.20140821')
+            if freebsd:
+                self.kernel = binary('kernel')
+            else:
+                self.kernel = binary('vmlinux.aarch64.20140821')
         elif machine_type == "VExpress_EMM":
             self.kernel = binary('vmlinux.aarch32.ll_20131205.0-gem5')
         else:
