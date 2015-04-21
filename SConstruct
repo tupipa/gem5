@@ -238,8 +238,9 @@ if not ('CC' in main_dict_keys and 'CXX' in main_dict_keys):
 
 # Check that swig is present
 if not 'SWIG' in main_dict_keys:
-    print "swig is not installed (package swig on Ubuntu and RedHat)"
-    Exit(1)
+    if not 'SWIG' in main.Dictionary()['ENV']:
+        print "swig is not installed (package swig on Ubuntu and RedHat)"
+        Exit(1)
 
 # add useful python code PYTHONPATH so it can be used by subprocesses
 # as well
@@ -399,7 +400,7 @@ global_vars = Variables(global_vars_file, args=ARGUMENTS)
 global_vars.AddVariables(
     ('CC', 'C compiler', environ.get('CC', main['CC'])),
     ('CXX', 'C++ compiler', environ.get('CXX', main['CXX'])),
-    ('SWIG', 'SWIG tool', environ.get('SWIG', main['SWIG'])),
+    ('SWIG', 'SWIG tool', environ.get('SWIG', main.get('SWIG'))),
     ('PROTOC', 'protoc tool', environ.get('PROTOC', 'protoc')),
     ('BATCH', 'Use batch pool for build and tests', False),
     ('BATCH_CMD', 'Batch pool submission command name', 'qdo'),
