@@ -91,3 +91,24 @@ class LinuxArmSystem(ArmSystem):
                                     "guest kernel panics")
     panic_on_oops = Param.Bool(False, "Trigger a gem5 panic if the " \
                                    "guest kernel oopses")
+
+class FreebsdArmSystem(ArmSystem):
+    type = 'FreebsdArmSystem'
+    cxx_header = "arch/arm/freebsd/system.hh"
+    load_addr_mask = 0x0fffffff
+    machine_type = Param.ArmMachineType('VExpress_EMM',
+        "Machine id from http://www.arm.linux.org.uk/developer/machines/")
+    atags_addr = Param.Addr("Address where default atags structure should " \
+                                "be written")
+    boot_release_addr = Param.Addr(0xfff8, "Address where secondary CPUs " \
+                                       "spin waiting boot in the loader")
+    dtb_filename = Param.String("",
+        "File that contains the Device Tree Blob. Don't use DTB if empty.")
+    early_kernel_symbols = Param.Bool(False,
+        "enable early kernel symbol tables before MMU")
+    enable_context_switch_stats_dump = Param.Bool(False, "enable stats/task info dumping at context switch boundaries")
+
+    panic_on_panic = Param.Bool(False, "Trigger a gem5 panic if the " \
+                                    "guest kernel panics")
+    panic_on_oops = Param.Bool(False, "Trigger a gem5 panic if the " \
+                                   "guest kernel oopses")

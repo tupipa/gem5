@@ -44,7 +44,11 @@
 
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#if defined(__FreeBSD__)
+#include <termios.h>
+#else
 #include <sys/termios.h>
+#endif
 #include <sys/types.h>
 #include <fcntl.h>
 #include <poll.h>

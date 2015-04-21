@@ -210,7 +210,9 @@ def makeArmSystem(mem_mode, machine_type, num_cpus=1, mdesc=None,
     if bare_metal:
         self = ArmSystem()
     else:
-        self = LinuxArmSystem()
+        self = FreebsdArmSystem()
+	''' Uncomment for Linux full system mode '''
+        # self = LinuxArmSystem()
 
     if not mdesc:
         # generic system
@@ -250,11 +252,23 @@ def makeArmSystem(mem_mode, machine_type, num_cpus=1, mdesc=None,
 
     # Attach any PCI devices this platform supports
     self.realview.attachPciDevices()
-    # default to an IDE controller rather than a CF one
-    try:
-        self.realview.ide.disks = [self.cf0]
-    except:
-        self.realview.cf_ctrl.disks = [self.cf0]
+
+    use_virtio = False
+
+    if use_virtio:
+        blk = VirtIOBlock()
+        child = RawDiskImage(read_only=True)
+        child.image_file=mdesc.disk()
+        img = CowDiskImage(child=child,
+                           read_only=False)
+        blk.image = img
+        self.realview.virtio.vio = blk
+    else:
+        # default to an IDE controller rather than a CF one
+        try:
+            self.realview.ide.disks = [self.cf0]
+        except:
+            self.realview.cf_ctrl.disks = [self.cf0]
 
     self.mem_ranges = []
     size_remain = long(Addr(mdesc.mem()))

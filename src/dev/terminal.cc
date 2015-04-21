@@ -34,7 +34,11 @@
  */
 
 #include <sys/ioctl.h>
+#if defined(__FreeBSD__)
+#include <termios.h>
+#else
 #include <sys/termios.h>
+#endif
 #include <poll.h>
 #include <unistd.h>
 

@@ -199,13 +199,19 @@ ArmLiveProcess::argsInit(int pageSize, IntRegIndex spIndex)
             Arm_Vfpv3d16 |
             0;
 
-        //Bits which describe the system hardware capabilities
-        //XXX Figure out what these should be
-        auxv.push_back(auxv_t(M5_AT_HWCAP, features));
+        if (objFile->getOpSys() == ObjectFile::Linux) {
+            //Bits which describe the system hardware capabilities
+            //XXX Figure out what these should be
+            auxv.push_back(auxv_t(M5_AT_HWCAP, features));
+        }
+
         //The system page size
         auxv.push_back(auxv_t(M5_AT_PAGESZ, ArmISA::PageBytes));
-        //Frequency at which times() increments
-        auxv.push_back(auxv_t(M5_AT_CLKTCK, 0x64));
+        if (objFile->getOpSys() == ObjectFile::Linux) {
+            //Frequency at which times() increments
+            auxv.push_back(auxv_t(M5_AT_CLKTCK, 0x64));
+        }
+
         // For statically linked executables, this is the virtual address of the
         // program header tables if they appear in the executable image
         auxv.push_back(auxv_t(M5_AT_PHDR, elfObject->programHeaderTable()));
@@ -227,16 +233,19 @@ ArmLiveProcess::argsInit(int pageSize, IntRegIndex spIndex)
         auxv.push_back(auxv_t(M5_AT_EUID, euid()));
         auxv.push_back(auxv_t(M5_AT_GID, gid()));
         auxv.push_back(auxv_t(M5_AT_EGID, egid()));
-        //Whether to enable "secure mode" in the executable
-        auxv.push_back(auxv_t(M5_AT_SECURE, 0));
 
-        // Pointer to 16 bytes of random data
-        auxv.push_back(auxv_t(M5_AT_RANDOM, 0));
+        if (objFile->getOpSys() == ObjectFile::Linux) {
+            //Whether to enable "secure mode" in the executable
+            auxv.push_back(auxv_t(M5_AT_SECURE, 0));
 
-        //The filename of the program
-        auxv.push_back(auxv_t(M5_AT_EXECFN, 0));
-        //The string "v71" -- ARM v7 architecture
-        auxv.push_back(auxv_t(M5_AT_PLATFORM, 0));
+            // Pointer to 16 bytes of random data
+            auxv.push_back(auxv_t(M5_AT_RANDOM, 0));
+
+            //The filename of the program
+            auxv.push_back(auxv_t(M5_AT_EXECFN, 0));
+            //The string "v71" -- ARM v7 architecture
+            auxv.push_back(auxv_t(M5_AT_PLATFORM, 0));
+        }
     }
 
     //Figure out how big the initial stack nedes to be
@@ -456,11 +465,33 @@ ArmLiveProcess64::setSyscallArg(ThreadContext *tc,
 void
 ArmLiveProcess32::setSyscallReturn(ThreadContext *tc, SyscallReturn sysret)
 {
+
+    if (objFile->getOpSys() == ObjectFile::FreeBSD) {
+        // Decode return value
+        if (sysret.encodedValue() >= 0)
+            // FreeBSD checks the carry bit to determine if syscall is succeeded
+            tc->setCCReg(CCREG_C, 0);
+        else {
+            sysret = -sysret.encodedValue();
+        }
+    }
+
     tc->setIntReg(ReturnValueReg, sysret.encodedValue());
 }
 
 void
 ArmLiveProcess64::setSyscallReturn(ThreadContext *tc, SyscallReturn sysret)
 {
+
+    if (objFile->getOpSys() == ObjectFile::FreeBSD) {
+        // Decode return value
+        if (sysret.encodedValue() >= 0)
+            // FreeBSD checks the carry bit to determine if syscall is succeeded
+            tc->setCCReg(CCREG_C, 0);
+        else {
+            sysret = -sysret.encodedValue();
+        }
+    }
+
     tc->setIntReg(ReturnValueReg, sysret.encodedValue());
 }

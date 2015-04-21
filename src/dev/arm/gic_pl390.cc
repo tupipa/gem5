@@ -525,7 +525,8 @@ Pl390::writeCpu(PacketPtr pkt)
         } else {
             uint32_t int_num = 1 << intNumToBit(iar.ack_id);
             if (!(activeInt[intNumToWord(iar.ack_id)] & int_num))
-                panic("Done handling interrupt that isn't active?\n");
+                warn("Done handling interrupt that isn't active: %d\n",
+                      intNumToBit(iar.ack_id));
             activeInt[intNumToWord(iar.ack_id)] &= ~int_num;
         }
         updateRunPri();

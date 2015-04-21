@@ -52,6 +52,7 @@ from Uart import Uart
 from SimpleMemory import SimpleMemory
 from Gic import *
 from EnergyCtrl import EnergyCtrl
+from VirtIO import PciVirtIO
 
 class AmbaPioDevice(BasicPioDevice):
     type = 'AmbaPioDevice'
@@ -488,10 +489,14 @@ class VExpress_EMM(RealView):
 
     # Attach any PCI devices that are supported
     def attachPciDevices(self):
-        self.ethernet = IGbE_e1000(pci_bus=0, pci_dev=0, pci_func=0,
-                                   InterruptLine=1, InterruptPin=1)
-        self.ide = IdeController(disks = [], pci_bus=0, pci_dev=1, pci_func=0,
-                                 InterruptLine=2, InterruptPin=2)
+        use_virtio = False
+        if use_virtio:
+            self.virtio = PciVirtIO(pci_bus=0, pci_dev=1, pci_func=0)
+        else:
+            self.ethernet = IGbE_e1000(pci_bus=0, pci_dev=0, pci_func=0,
+                                       InterruptLine=1, InterruptPin=1)
+            self.ide = IdeController(disks = [], pci_bus=0, pci_dev=1, pci_func=0,
+                                     InterruptLine=2, InterruptPin=2)
 
     def enableMSIX(self):
         self.gic = Pl390(dist_addr=0x2C001000, cpu_addr=0x2C002000, it_lines=512)
@@ -567,6 +572,11 @@ class VExpress_EMM(RealView):
        self.usb_fake.pio        = bus.master
        self.mmc_fake.pio        = bus.master
        self.energy_ctrl.pio     = bus.master
+       use_virtio = False
+       if use_virtio:
+           self.virtio.pio      = bus.master
+           self.virtio.dma      = bus.slave
+           self.virtio.config   = bus.master
 
        # Try to attach the I/O if it exists
        try:
