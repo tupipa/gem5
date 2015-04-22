@@ -769,7 +769,7 @@ static SyscallDesc syscallDescs64[] = {
     /*  114 */ SyscallDesc("unused#114", unimplementedFunc),
     /*  115 */ SyscallDesc("unused#115", unimplementedFunc),
     /*  116 */ SyscallDesc("unused#116", unimplementedFunc),
-    /*  117 */ SyscallDesc("unused#117", unimplementedFunc),
+    /*  117 */ SyscallDesc("getrusage", getrusageFunc<ArmFreebsd64>),
     /*  118 */ SyscallDesc("unused#118", unimplementedFunc),
     /*  119 */ SyscallDesc("unused#119", unimplementedFunc),
     /*  120 */ SyscallDesc("unused#120", unimplementedFunc),
