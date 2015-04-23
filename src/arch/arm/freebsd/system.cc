@@ -48,7 +48,7 @@ using namespace ArmISA;
 using namespace FreeBSD;
 
 FreebsdArmSystem::FreebsdArmSystem(Params *p)
-    : ArmSystem(p), dumpStatsPCEventF(nullptr),
+    : GenericArmSystem(p), dumpStatsPCEventF(nullptr),
       enableContextSwitchStatsDump(p->enable_context_switch_stats_dump),
       taskFile(nullptr), kernelPanicEvent(nullptr), kernelOopsEvent(nullptr),
       bootReleaseAddr(p->boot_release_addr)
@@ -91,7 +91,7 @@ FreebsdArmSystem::initState()
     // address map being resolved in the interconnect
 
     // Call the initialisation of the super class
-    ArmSystem::initState();
+    GenericArmSystem::initState();
 
     // Load symbols at physical address, we might not want
     // to do this permanently, for but early bootup work

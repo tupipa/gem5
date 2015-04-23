@@ -71,44 +71,31 @@ class ArmSystem(System):
     have_large_asid_64 = Param.Bool(False,
         "True if ASID is 16 bits in AArch64 (ARMv8)")
 
-class LinuxArmSystem(ArmSystem):
+class GenericArmSystem(ArmSystem):
+    type = 'GenericArmSystem'
+    cxx_header = "arch/arm/system.hh"
+    load_addr_mask = 0x0fffffff
+    machine_type = Param.ArmMachineType('VExpress_EMM',
+        "Machine id from http://www.arm.linux.org.uk/developer/machines/")
+    atags_addr = Param.Addr("Address where default atags structure should " \
+                                "be written")
+    boot_release_addr = Param.Addr(0xfff8, "Address where secondary CPUs " \
+                                       "spin waiting boot in the loader")
+    dtb_filename = Param.String("",
+        "File that contains the Device Tree Blob. Don't use DTB if empty.")
+    early_kernel_symbols = Param.Bool(False,
+        "enable early kernel symbol tables before MMU")
+    enable_context_switch_stats_dump = Param.Bool(False, "enable stats/task info dumping at context switch boundaries")
+
+    panic_on_panic = Param.Bool(False, "Trigger a gem5 panic if the " \
+                                    "guest kernel panics")
+    panic_on_oops = Param.Bool(False, "Trigger a gem5 panic if the " \
+                                   "guest kernel oopses")
+
+class LinuxArmSystem(GenericArmSystem):
     type = 'LinuxArmSystem'
     cxx_header = "arch/arm/linux/system.hh"
-    load_addr_mask = 0x0fffffff
-    machine_type = Param.ArmMachineType('VExpress_EMM',
-        "Machine id from http://www.arm.linux.org.uk/developer/machines/")
-    atags_addr = Param.Addr("Address where default atags structure should " \
-                                "be written")
-    boot_release_addr = Param.Addr(0xfff8, "Address where secondary CPUs " \
-                                       "spin waiting boot in the loader")
-    dtb_filename = Param.String("",
-        "File that contains the Device Tree Blob. Don't use DTB if empty.")
-    early_kernel_symbols = Param.Bool(False,
-        "enable early kernel symbol tables before MMU")
-    enable_context_switch_stats_dump = Param.Bool(False, "enable stats/task info dumping at context switch boundaries")
 
-    panic_on_panic = Param.Bool(False, "Trigger a gem5 panic if the " \
-                                    "guest kernel panics")
-    panic_on_oops = Param.Bool(False, "Trigger a gem5 panic if the " \
-                                   "guest kernel oopses")
-
-class FreebsdArmSystem(ArmSystem):
+class FreebsdArmSystem(GenericArmSystem):
     type = 'FreebsdArmSystem'
     cxx_header = "arch/arm/freebsd/system.hh"
-    load_addr_mask = 0x0fffffff
-    machine_type = Param.ArmMachineType('VExpress_EMM',
-        "Machine id from http://www.arm.linux.org.uk/developer/machines/")
-    atags_addr = Param.Addr("Address where default atags structure should " \
-                                "be written")
-    boot_release_addr = Param.Addr(0xfff8, "Address where secondary CPUs " \
-                                       "spin waiting boot in the loader")
-    dtb_filename = Param.String("",
-        "File that contains the Device Tree Blob. Don't use DTB if empty.")
-    early_kernel_symbols = Param.Bool(False,
-        "enable early kernel symbol tables before MMU")
-    enable_context_switch_stats_dump = Param.Bool(False, "enable stats/task info dumping at context switch boundaries")
-
-    panic_on_panic = Param.Bool(False, "Trigger a gem5 panic if the " \
-                                    "guest kernel panics")
-    panic_on_oops = Param.Bool(False, "Trigger a gem5 panic if the " \
-                                   "guest kernel oopses")

@@ -45,7 +45,7 @@
 
 class DumpStatsPCEventF;
 
-class FreebsdArmSystem : public ArmSystem
+class FreebsdArmSystem : public GenericArmSystem
 {
   protected:
     DumpStatsPCEventF *dumpStatsPCEventF;
