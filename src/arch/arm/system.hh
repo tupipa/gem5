@@ -279,7 +279,7 @@ class GenericArmSystem : public ArmSystem
     }
 
     GenericArmSystem(Params *p);
-    ~GenericArmSystem();
+    virtual ~GenericArmSystem();
 
     /**
      * Initialise the system
