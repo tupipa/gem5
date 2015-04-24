@@ -251,17 +251,6 @@ ArmSystemParams::create()
     return new ArmSystem(this);
 }
 
-GenericArmSystem::GenericArmSystem(Params *p)
-    : ArmSystem(p)
-{
-
-}
-
-GenericArmSystem::~GenericArmSystem()
-{
-
-}
-
 void
 GenericArmSystem::initState()
 {
@@ -270,12 +259,11 @@ GenericArmSystem::initState()
 
     // Call the initialisation of the super class
     ArmSystem::initState();
-
-    //const Params* p = params();
 }
 
 GenericArmSystem *
 GenericArmSystemParams::create()
 {
+
     return new GenericArmSystem(this);
 }
