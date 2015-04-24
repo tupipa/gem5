@@ -1,33 +1,31 @@
-/*
- * Copyright (c) 2004 The Regents of The University of Michigan
+/*-
+ * Copyright (c) 2015 Ruslan Bukin <br@bsdpad.com>
  * All rights reserved.
  *
+ * This software was developed by the University of Cambridge Computer
+ * Laboratory as part of the CTSRD Project, with support from the UK Higher
+ * Education Innovation Fund (HEIF).
+ *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ali Saidi
- *          Nathan Binkert
- *          Dam Sunwoo
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
  */
 
 #ifndef __ARCH_GENERIC_FREEBSD_THREADINFO_HH__
@@ -44,141 +42,15 @@ class ThreadInfo
   private:
     ThreadContext *tc;
     System *sys;
-    Addr pcbb;
-
-    template <typename T>
-    bool
-    get_data(const char *symbol, T &data)
-    {
-        Addr addr = 0;
-        if (!sys->kernelSymtab->findAddress(symbol, addr)) {
-            warn_once("Unable to find kernel symbol %s\n", symbol);
-            warn_once("Kernel not compiled with task_struct info; can't get "
-                      "currently executing task/process/thread name/ids!\n");
-            return false;
-        }
-
-        CopyOut(tc, &data, addr, sizeof(T));
-
-        data = TheISA::gtoh(data);
-
-        return true;
-    }
 
   public:
-    ThreadInfo(ThreadContext *_tc, Addr _pcbb = 0)
-        : tc(_tc), sys(tc->getSystemPtr()), pcbb(_pcbb)
+    ThreadInfo(ThreadContext *_tc)
+        : tc(_tc), sys(tc->getSystemPtr())
     {
 
     }
     ~ThreadInfo()
     {}
-
-    inline Addr
-    curThreadInfo()
-    {
-        if (!TheISA::CurThreadInfoImplemented)
-            panic("curThreadInfo() not implemented for this ISA");
-
-        Addr addr = pcbb;
-        Addr sp;
-
-        if (!addr)
-            addr = tc->readMiscRegNoEffect(TheISA::CurThreadInfoReg);
-
-        PortProxy &p = tc->getPhysProxy();
-        p.readBlob(addr, (uint8_t *)&sp, sizeof(Addr));
-
-        return sp & ~ULL(0x3fff);
-    }
-
-    inline Addr
-    curTaskInfo(Addr thread_info = 0)
-    {
-        int32_t offset;
-        if (!get_data("thread_info_task", offset))
-            return 0;
-
-        if (!thread_info)
-            thread_info = curThreadInfo();
-
-        Addr addr;
-        CopyOut(tc, &addr, thread_info + offset, sizeof(addr));
-
-        return addr;
-    }
-
-    int32_t
-    curTaskPID(Addr thread_info = 0)
-    {
-        int32_t offset;
-        if (!get_data("task_struct_pid", offset))
-            return -1;
-
-        int32_t pid;
-        CopyOut(tc, &pid, curTaskInfo(thread_info) + offset, sizeof(pid));
-
-        return pid;
-    }
-
-    int32_t
-    curTaskTGID(Addr thread_info = 0)
-    {
-        int32_t offset;
-        if (!get_data("task_struct_tgid", offset))
-            return -1;
-
-        int32_t tgid;
-        CopyOut(tc, &tgid, curTaskInfo(thread_info) + offset, sizeof(tgid));
-
-        return tgid;
-    }
-
-    int64_t
-    curTaskStart(Addr thread_info = 0)
-    {
-        int32_t offset;
-        if (!get_data("task_struct_start_time", offset))
-            return -1;
-
-        int64_t data;
-        // start_time is actually of type timespec, but if we just
-        // grab the first long, we'll get the seconds out of it
-        CopyOut(tc, &data, curTaskInfo(thread_info) + offset, sizeof(data));
-
-        return data;
-    }
-
-    std::string
-    curTaskName(Addr thread_info = 0)
-    {
-        int32_t offset;
-        int32_t size;
-
-        if (!get_data("task_struct_comm", offset))
-            return "FailureIn_curTaskName";
-
-        if (!get_data("task_struct_comm_size", size))
-            return "FailureIn_curTaskName";
-
-        char buffer[size + 1];
-        CopyStringOut(tc, buffer, curTaskInfo(thread_info) + offset, size);
-
-        return buffer;
-    }
-
-    int32_t
-    curTaskMm(Addr thread_info = 0)
-    {
-        int32_t offset;
-        if (!get_data("task_struct_mm", offset))
-            return -1;
-
-        int32_t mm_ptr;
-        CopyOut(tc, &mm_ptr, curTaskInfo(thread_info) + offset, sizeof(mm_ptr));
-
-        return mm_ptr;
-    }
 };
 
 } // namespace FreeBSD

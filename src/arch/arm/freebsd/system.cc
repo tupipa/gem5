@@ -74,12 +74,6 @@ FreebsdArmSystem::FreebsdArmSystem(Params *p)
 bool
 FreebsdArmSystem::adderBootUncacheable(Addr a)
 {
-    Addr block = a & ~ULL(0x7F);
-
-    if (block == secDataPtrAddr || block == secDataAddr ||
-            block == penReleaseAddr || pen64ReleaseAddr == block ||
-            block == bootReleaseAddr)
-        return true;
 
     return false;
 }
