@@ -100,7 +100,7 @@ FreebsdArmSystem::initState()
 
     // Check if the kernel image has a symbol that tells us it supports
     // device trees.
-    bool kernel_has_fdt_support = 
+    bool kernel_has_fdt_support =
         kernelSymtab->findAddress("fdt_get_range", addr);
     bool dtb_file_specified = params()->dtb_filename != "";
 
