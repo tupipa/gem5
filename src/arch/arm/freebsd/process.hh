@@ -28,8 +28,8 @@
  * SUCH DAMAGE.
  */
 
-#ifndef __ARM_FREEBSD_PROCESS_HH__
-#define __ARM_FREEBSD_PROCESS_HH__
+#ifndef __ARCH_ARM_FREEBSD_PROCESS_HH__
+#define __ARCH_ARM_FREEBSD_PROCESS_HH__
 
 #include <vector>
 
@@ -81,4 +81,4 @@ class ArmFreebsdProcess64 : public ArmLiveProcess64, public ArmFreebsdProcessBit
     SyscallDesc* getDesc(int callnum);
 };
 
-#endif // __ARM_FREEBSD_PROCESS_HH__
+#endif // __ARCH_ARM_FREEBSD_PROCESS_HH__
