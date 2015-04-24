@@ -278,8 +278,8 @@ class GenericArmSystem : public ArmSystem
         return dynamic_cast<const Params *>(_params);
     }
 
-    GenericArmSystem(Params *p);
-    virtual ~GenericArmSystem();
+    GenericArmSystem(Params *p) : ArmSystem(p) {};
+    virtual ~GenericArmSystem() {};
 
     /**
      * Initialise the system
@@ -288,4 +288,3 @@ class GenericArmSystem : public ArmSystem
 };
 
 #endif
-
