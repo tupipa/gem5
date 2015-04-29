@@ -50,7 +50,7 @@
 using namespace std;
 using namespace ArmISA;
 
-SyscallReturn
+static SyscallReturn
 issetugidFunc(SyscallDesc *desc, int callnum, LiveProcess *process,
            ThreadContext *tc)
 {
@@ -58,7 +58,7 @@ issetugidFunc(SyscallDesc *desc, int callnum, LiveProcess *process,
     return 0;
 }
 
-SyscallReturn
+static SyscallReturn
 sysctlFunc(SyscallDesc *desc, int callnum, LiveProcess *process,
            ThreadContext *tc)
 {
@@ -91,7 +91,7 @@ sysctlFunc(SyscallDesc *desc, int callnum, LiveProcess *process,
     void *holdp = (void *)buf2.bufferPtr();
     size_t *holdlenp = (size_t *)buf3.bufferPtr();
 
-    ret = sysctl((const int *)hnamep, namelen, holdp, holdlenp, hnewp, newlen);
+    ret = sysctl((int *)hnamep, namelen, holdp, holdlenp, hnewp, newlen);
 
     buf.copyOut(tc->getMemProxy());
     buf2.copyOut(tc->getMemProxy());
