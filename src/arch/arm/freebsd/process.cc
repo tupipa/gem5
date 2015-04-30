@@ -30,8 +30,16 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "arch/arm/freebsd/freebsd.hh"
 #include "arch/arm/freebsd/process.hh"
+
+#include <sys/mman.h>
+#include <sys/param.h>
+#include <sys/syscall.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#include <utime.h>
+
+#include "arch/arm/freebsd/freebsd.hh"
 #include "arch/arm/isa_traits.hh"
 #include "base/trace.hh"
 #include "cpu/thread_context.hh"
@@ -40,19 +48,12 @@
 #include "sim/syscall_emul.hh"
 #include "sim/system.hh"
 
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <sys/syscall.h>
-#include <sys/param.h>
-#include <sys/sysctl.h>
-#include <utime.h>
-
 using namespace std;
 using namespace ArmISA;
 
 static SyscallReturn
 issetugidFunc(SyscallDesc *desc, int callnum, LiveProcess *process,
-           ThreadContext *tc)
+              ThreadContext *tc)
 {
 
     return 0;

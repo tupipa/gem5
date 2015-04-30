@@ -33,10 +33,9 @@
 #ifndef __FREEBSD_HH__
 #define __FREEBSD_HH__
 
-#include "base/types.hh"
-
 #include <string>
 
+#include "base/types.hh"
 #include "kern/operatingsystem.hh"
 
 class ThreadContext;

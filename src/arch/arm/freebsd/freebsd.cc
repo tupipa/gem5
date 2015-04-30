@@ -30,9 +30,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <fcntl.h>
-
 #include "arch/arm/freebsd/freebsd.hh"
+
+#include <fcntl.h>
 
 // open(2) flags translation table
 OpenFlagTransTable ArmFreebsd32::openFlagTable[] = {

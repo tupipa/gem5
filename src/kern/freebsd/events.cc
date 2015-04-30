@@ -30,13 +30,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "kern/freebsd/events.hh"
+
 #include <sstream>
 
 #include "arch/utility.hh"
 #include "base/trace.hh"
 #include "cpu/thread_context.hh"
 #include "debug/DebugPrintf.hh"
-#include "kern/freebsd/events.hh"
 #include "kern/system_events.hh"
 #include "sim/arguments.hh"
 #include "sim/pseudo_inst.hh"
