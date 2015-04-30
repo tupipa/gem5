@@ -237,8 +237,8 @@ if not ('CC' in main_dict_keys and 'CXX' in main_dict_keys):
     Exit(1)
 
 # Check that swig is present
-if not 'SWIG' in main_dict_keys:
-    if not 'SWIG' in main.Dictionary()['ENV']:
+if not ('SWIG' in main_dict_keys or \
+    'SWIG' in main.Dictionary()['ENV']):
         print "swig is not installed (package swig on Ubuntu and RedHat)"
         Exit(1)
 
