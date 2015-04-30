@@ -31,6 +31,7 @@
  */
 
 #include "arch/arm/freebsd/system.hh"
+
 #include "arch/arm/isa_traits.hh"
 #include "arch/arm/utility.hh"
 #include "arch/generic/freebsd/threadinfo.hh"
