@@ -47,7 +47,9 @@ OpenFlagTransTable ArmFreebsd32::openFlagTable[] = {
   { ArmFreebsd32::TGT_O_NONBLOCK,   O_NONBLOCK },
   { ArmFreebsd32::TGT_O_SYNC,       O_SYNC },
   { ArmFreebsd32::TGT_FASYNC,       FASYNC },
+#ifdef O_DIRECT
   { ArmFreebsd32::TGT_O_DIRECT,     O_DIRECT },
+#endif
   { ArmFreebsd32::TGT_O_DIRECTORY,  O_DIRECTORY },
   { ArmFreebsd32::TGT_O_NOFOLLOW,   O_NOFOLLOW },
 };
@@ -68,7 +70,9 @@ OpenFlagTransTable ArmFreebsd64::openFlagTable[] = {
   { ArmFreebsd64::TGT_O_NONBLOCK,   O_NONBLOCK },
   { ArmFreebsd64::TGT_O_SYNC,       O_SYNC },
   { ArmFreebsd64::TGT_FASYNC,       FASYNC },
+#ifdef O_DIRECT
   { ArmFreebsd64::TGT_O_DIRECT,     O_DIRECT },
+#endif
   { ArmFreebsd64::TGT_O_DIRECTORY,  O_DIRECTORY },
   { ArmFreebsd64::TGT_O_NOFOLLOW,   O_NOFOLLOW },
 };
