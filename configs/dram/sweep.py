@@ -93,15 +93,22 @@ system.clk_domain = SrcClockDomain(clock = '1.5GHz',
 mem_range = AddrRange('256MB')
 system.mem_ranges = [mem_range]
 
+# do not worry about reserving space for the backing store
+mmap_using_noreserve = True
+
 # force a single channel to match the assumptions in the DRAM traffic
 # generator
 options.mem_channels = 1
+options.external_memory_system = 0
 MemConfig.config_mem(options, system)
 
 # the following assumes that we are using the native DRAM
 # controller, check to be sure
 if not isinstance(system.mem_ctrls[0], m5.objects.DRAMCtrl):
     fatal("This script assumes the memory is a DRAMCtrl subclass")
+
+# there is no point slowing things down by saving any data
+system.mem_ctrls[0].null = True
 
 # Set the address mapping based on input argument
 # Default to RoRaBaCoCh
