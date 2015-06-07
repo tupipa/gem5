@@ -57,7 +57,6 @@ ArmSystem::ArmSystem(Params *p)
     : System(p), bootldr(NULL), _haveSecurity(p->have_security),
       _haveLPAE(p->have_lpae),
       _haveVirtualization(p->have_virtualization),
-      _haveGenericTimer(p->have_generic_timer),
       _genericTimer(nullptr),
       _highestELIs64(p->highest_el_is_64),
       _resetAddr64(p->reset_addr_64),
@@ -149,24 +148,6 @@ ArmSystem::initState()
             threadContexts[0]->pcState((kernelEntry & loadAddrMask) +
                     loadAddrOffset);
     }
-}
-
-GenericTimer::ArchTimer *
-ArmSystem::getArchTimer(int cpu_id) const
-{
-    if (_genericTimer) {
-        return _genericTimer->getArchTimer(cpu_id);
-    }
-    return NULL;
-}
-
-GenericTimer::SystemCounter *
-ArmSystem::getSystemCounter() const
-{
-    if (_genericTimer) {
-        return _genericTimer->getSystemCounter();
-    }
-    return NULL;
 }
 
 bool

@@ -46,13 +46,13 @@
 #include <string>
 #include <vector>
 
-#include "dev/arm/generic_timer.hh"
 #include "kern/linux/events.hh"
 #include "params/ArmSystem.hh"
 #include "params/GenericArmSystem.hh"
 #include "sim/sim_object.hh"
 #include "sim/system.hh"
 
+class GenericTimer;
 class ThreadContext;
 
 class ArmSystem : public System
@@ -83,11 +83,6 @@ class ArmSystem : public System
      * True if this system implements the virtualization Extensions
      */
     const bool _haveVirtualization;
-
-    /**
-     * True if this system implements the Generic Timer extension
-     */
-    const bool _haveGenericTimer;
 
     /**
      * Pointer to the Generic Timer wrapper.
@@ -157,20 +152,14 @@ class ArmSystem : public System
       */
     bool haveVirtualization() const { return _haveVirtualization; }
 
-    /** Returns true if this system implements the Generic Timer extension. */
-    bool haveGenericTimer() const { return _haveGenericTimer; }
-
     /** Sets the pointer to the Generic Timer. */
     void setGenericTimer(GenericTimer *generic_timer)
     {
         _genericTimer = generic_timer;
     }
 
-    /** Returns a pointer to the system counter. */
-    GenericTimer::SystemCounter *getSystemCounter() const;
-
-    /** Returns a pointer to the appropriate architected timer. */
-    GenericTimer::ArchTimer *getArchTimer(int cpu_id) const;
+    /** Get a pointer to the system's generic timer model */
+    GenericTimer *getGenericTimer() const { return _genericTimer; }
 
     /** Returns true if the register width of the highest implemented exception
      * level is 64 bits (ARMv8) */

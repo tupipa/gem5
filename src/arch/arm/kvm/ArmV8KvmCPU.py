@@ -1,4 +1,4 @@
-# Copyright (c) 2012 ARM Limited
+# Copyright (c) 2015 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -36,8 +36,8 @@
 # Authors: Andreas Sandberg
 
 from m5.params import *
-from BaseKvmCPU import BaseKvmCPU
+from BaseArmKvmCPU import BaseArmKvmCPU
 
-class ArmKvmCPU(BaseKvmCPU):
-    type = 'ArmKvmCPU'
-    cxx_header = "cpu/kvm/arm_cpu.hh"
+class ArmV8KvmCPU(BaseArmKvmCPU):
+    type = 'ArmV8KvmCPU'
+    cxx_header = "arch/arm/kvm/armv8_cpu.hh"
