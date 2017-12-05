@@ -63,6 +63,7 @@ using namespace Linux;
 LinuxArmSystem::LinuxArmSystem(Params *p)
     : GenericArmSystem(p), dumpStatsPCEvent(nullptr),
       enableContextSwitchStatsDump(p->enable_context_switch_stats_dump),
+      trackCurrentPidTgid(p->track_current_pid_tgid),
       taskFile(nullptr), kernelPanicEvent(nullptr), kernelOopsEvent(nullptr)
 {
     if (p->panic_on_panic) {
@@ -230,7 +231,7 @@ LinuxArmSystemParams::create()
 void
 LinuxArmSystem::startup()
 {
-    if (enableContextSwitchStatsDump) {
+    if (enableContextSwitchStatsDump || trackCurrentPidTgid) {
         if (!highestELIs64()) {
             dumpStatsPCEvent =
                 addKernelFuncEvent<DumpStatsPCEvent>("__switch_to");
@@ -242,8 +243,10 @@ LinuxArmSystem::startup()
         if (!dumpStatsPCEvent)
            panic("dumpStatsPCEvent not created!");
 
-        std::string task_filename = "tasks.txt";
-        taskFile = simout.create(name() + "." + task_filename);
+        if (enableContextSwitchStatsDump) {
+            std::string task_filename = "tasks.txt";
+            taskFile = simout.create(name() + "." + task_filename);
+        }
 
         for (int i = 0; i < _numContexts; i++) {
             ThreadContext *tc = threadContexts[i];
@@ -349,18 +352,21 @@ DumpStatsPCEvent::process(ThreadContext *tc)
     // Set cpu task id, output process info, and dump stats
     tc->getCpuPtr()->taskId(taskMap[pid]);
     tc->getCpuPtr()->setPid(pid);
+    tc->getCpuPtr()->setTgid(tgid);
 
-    std::ostream* taskFile = sys->taskFile;
+    if (sys->enableContextSwitchStatsDump) {
+        std::ostream* taskFile = sys->taskFile;
 
-    // Task file is read by cache occupancy plotting script or
-    // Streamline conversion script.
-    ccprintf(*taskFile,
-             "tick=%lld %d cpu_id=%d next_pid=%d next_tgid=%d next_task=%s\n",
-             curTick(), taskMap[pid], tc->cpuId(), (int) pid, (int) tgid,
-             next_task_str);
-    taskFile->flush();
+        // Task file is read by cache occupancy plotting script or
+        // Streamline conversion script.
+        ccprintf(*taskFile,
+                 "tick=%lld %d cpu_id=%d next_pid=%d next_tgid=%d next_task=%s\n",
+                 curTick(), taskMap[pid], tc->cpuId(), (int) pid, (int) tgid,
+                 next_task_str);
+        taskFile->flush();
 
-    // Dump and reset statistics
-    Stats::schedStatEvent(true, true, curTick(), 0);
+        // Dump and reset statistics
+        Stats::schedStatEvent(true, true, curTick(), 0);
+    }
 }
 

@@ -74,6 +74,12 @@ class LinuxArmSystem : public GenericArmSystem
      *  Streamline and per-thread cache occupancy studies, etc. */
     bool enableContextSwitchStatsDump;
 
+    /** When enabled, track the current PID and TGID across context switches.
+     * Useful for when we want to output these during instruction tracing. It
+     * means that we pay the cost once per context switch rather than on every
+     * instruction! */
+    bool trackCurrentPidTgid;
+
     /** This map stores a mapping of OS process IDs to internal Task IDs. The
      * mapping is done because the stats system doesn't tend to like vectors
      * that are much greater than 1000 items and the entire process space is

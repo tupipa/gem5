@@ -102,6 +102,8 @@ def build_test_system(np):
                                  external_memory=options.external_memory_system)
         if options.enable_context_switch_stats_dump:
             test_sys.enable_context_switch_stats_dump = True
+        if options.track_current_pid_tgid:
+            test_sys.track_current_pid_tgid = True
     else:
         fatal("Incapable of building %s full system!", buildEnv['TARGET_ISA'])
 

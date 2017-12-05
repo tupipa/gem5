@@ -274,6 +274,9 @@ def addFSOptions(parser):
         parser.add_option("--enable-context-switch-stats-dump", \
                 action="store_true", help="Enable stats dump at context "\
                 "switches and dump tasks file (required for Streamline)")
+        parser.add_option("--track-current-pid-tgid", \
+                action="store_true", help="Track current PID and TGID across "\
+                "context switches")
 
     # Benchmark options
     parser.add_option("--dual", action="store_true",

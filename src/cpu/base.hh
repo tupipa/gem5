@@ -143,6 +143,8 @@ class BaseCPU : public MemObject
      * used to generate a taskId */
     uint32_t _pid;
 
+    uint32_t _tgid;
+
     /** Is the CPU switched out or active? */
     bool _switchedOut;
 
@@ -198,6 +200,9 @@ class BaseCPU : public MemObject
 
     uint32_t getPid() const { return _pid; }
     void setPid(uint32_t pid) { _pid = pid; }
+
+    uint32_t getTgid() const { return _tgid; }
+    void setTgid(uint32_t tgid) { _tgid = tgid; }
 
     inline void workItemBegin() { numWorkItemsStarted++; }
     inline void workItemEnd() { numWorkItemsCompleted++; }
