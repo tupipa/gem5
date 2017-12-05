@@ -62,6 +62,7 @@
 #include "cpu/thread_context.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/TLB.hh"
+#include "debug/TLBMiss.hh"
 #include "debug/TLBVerbose.hh"
 #include "mem/page_table.hh"
 #include "params/ArmTLB.hh"
@@ -1353,6 +1354,8 @@ TLB::getTE(TlbEntry **te, RequestPtr req, ThreadContext *tc, Mode mode,
         // start translation table walk, pass variables rather than
         // re-retreaving in table walker for speed
         DPRINTF(TLB, "TLB Miss: Starting hardware table walker for %#x(%d:%d)\n",
+                vaddr_tainted, asid, vmid);
+        DPRINTF(TLBMiss, "TLB Miss: Starting hardware table walker for %#x(%d:%d)\n",
                 vaddr_tainted, asid, vmid);
         Fault fault;
         fault = tableWalker->walk(req, tc, asid, vmid, isHyp, mode,

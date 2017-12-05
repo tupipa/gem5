@@ -60,6 +60,7 @@ message Packet {
   required uint32 cmd = 2;
   required uint64 addr = 3;
   required uint32 size = 4;
-  optional uint32 flags = 5;
-  optional uint64 pkt_id = 6;
+  optional bytes data = 5;
+  optional uint32 flags = 6;
+  optional uint64 pkt_id = 7;
 }

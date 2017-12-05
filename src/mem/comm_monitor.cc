@@ -189,6 +189,7 @@ CommMonitor::recvAtomic(PacketPtr pkt)
         pkt_msg.set_flags(pkt->req->getFlags());
         pkt_msg.set_addr(pkt->getAddr());
         pkt_msg.set_size(pkt->getSize());
+        pkt_msg.set_data(std::string(pkt->getPtr<char>(), pkt->getSize()));
 
         traceStream->write(pkt_msg);
     }
@@ -251,6 +252,7 @@ CommMonitor::recvTimingReq(PacketPtr pkt)
         pkt_msg.set_flags(req_flags);
         pkt_msg.set_addr(addr);
         pkt_msg.set_size(size);
+        pkt_msg.set_data(std::string(pkt->getPtr<char>(), size));
 
         traceStream->write(pkt_msg);
     }

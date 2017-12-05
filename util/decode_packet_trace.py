@@ -75,6 +75,25 @@ except:
         print "Failed to import packet proto definitions"
         exit(-1)
 
+def str2hexstr(s):
+    return ''.join(hex(ord(c))[2:].rjust(2,"0") for c in s)
+
+def cmd2txt(c):
+    # From src/mem/packet.hh
+    commands = [ "InvalidCmd", "ReadReq", "ReadResp",
+        "ReadRespWithInvalidate", "WriteReq", "WriteResp",
+        "Writeback", "SoftPFReq", "HardPFReq",
+        "SoftPFResp", "HardPFResp", "WriteInvalidateReq",
+        "WriteInvalidateResp", "UpgradeReq", "SCUpgradeReq",
+        "UpgradeResp", "SCUpgradeFailReq", "UpgradeFailResp",
+        "ReadExReq", "ReadExResp", "LoadLockedReq",
+        "StoreCondReq", "StoreCondFailReq", "StoreCondResp",
+        "SwapReq", "SwapResp", "MessageReq",
+        "MessageResp", "InvalidDestError", "BadAddressError",
+        "FunctionalReadError", "FunctionalWriteError", "PrintReq",
+        "FlushReq", "InvalidationReq"]
+    return commands[c] if 0 < c and c < len(commands) else "Unknown"
+
 def main():
     if len(sys.argv) != 3:
         print "Usage: ", sys.argv[0], " <protobuf input> <ASCII output>"
@@ -110,19 +129,18 @@ def main():
     num_packets = 0
     packet = packet_pb2.Packet()
 
+    ascii_out.write('%2s,%22s,%016s,%4s,%5s,%4s,%s\n' % ("ID", "Command", "Address", "Size", "Flags", "Tick", "Data"))
     # Decode the packet messages until we hit the end of the file
     while protolib.decodeMessage(proto_in, packet):
         num_packets += 1
-        # ReadReq is 1 and WriteReq is 4 in src/mem/packet.hh Command enum
-        cmd = 'r' if packet.cmd == 1 else ('w' if packet.cmd == 4 else 'u')
-        if packet.HasField('pkt_id'):
-            ascii_out.write('%s,' % (packet.pkt_id))
-        if packet.HasField('flags'):
-            ascii_out.write('%s,%s,%s,%s,%s\n' % (cmd, packet.addr, packet.size,
-                            packet.flags, packet.tick))
-        else:
-            ascii_out.write('%s,%s,%s,%s\n' % (cmd, packet.addr, packet.size,
-                                           packet.tick))
+        ascii_out.write('%2s,%22s,%016x,%4s,%5s,%4s,%s\n' % 
+                ( packet.pkt_id if packet.HasField('pkt_id') else ""
+                , cmd2txt(packet.cmd) if packet.HasField('cmd') else "ERROR"
+                , packet.addr if packet.HasField('addr') else 0xDEADDEADDEADDEAD
+                , packet.size if packet.HasField('size') else 0xDEADDEADDEADDEAD
+                , packet.flags if packet.HasField('flags') else ""
+                , packet.tick if packet.HasField('tick') else "ERROR"
+                , str2hexstr(packet.data) if packet.HasField('data') else ""))
 
     print "Parsed packets:", num_packets
 

@@ -38,4 +38,5 @@ Source('tlb.cc')
 SimObject('BaseTLB.py')
 
 DebugFlag('TLB')
+DebugFlag('TLBMiss')
 Source('pseudo_inst.cc')

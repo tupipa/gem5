@@ -63,23 +63,41 @@ def config_cache(options, system):
         dcache_class, icache_class, l2_cache_class = \
             O3_ARM_v7a_DCache, O3_ARM_v7a_ICache, O3_ARM_v7aL2
     else:
-        dcache_class, icache_class, l2_cache_class = \
-            L1Cache, L1Cache, L2Cache
+        dcache_class, icache_class, l2_cache_class, l3_cache_class = \
+            L1Cache, L1Cache, L2Cache, L3Cache
 
     # Set the cache line size of the system
     system.cache_line_size = options.cacheline_size
+
+    mem_port = system.membus.slave
+    if options.l3cache:
+        # Provide a clock for the l3 and the L1-to-l3 bus here as they
+        # are not connected using addTwoLevelCacheHierarchy. Use the
+        # same clock as the CPUs.
+        system.l3 = l3_cache_class(clk_domain=system.cpu_clk_domain,
+                                   size=options.l3_size,
+                                   assoc=options.l3_assoc)
+
+        system.l3.mem_side = mem_port
+        mem_port = system.l3.cpu_side
 
     if options.l2cache:
         # Provide a clock for the L2 and the L1-to-L2 bus here as they
         # are not connected using addTwoLevelCacheHierarchy. Use the
         # same clock as the CPUs.
+        if options.l2_prefetcher == "stride":
+            prefetcher_set = StridePrefetcher()
+        else:
+            raise Exception("Unknown prefetcher: " + options.l2_prefetcher)
         system.l2 = l2_cache_class(clk_domain=system.cpu_clk_domain,
                                    size=options.l2_size,
-                                   assoc=options.l2_assoc)
+                                   assoc=options.l2_assoc,
+                                   prefetcher=prefetcher_set,
+                                   prefetch_on_access=options.l2_prefetch_on_access)
 
         system.tol2bus = L2XBar(clk_domain = system.cpu_clk_domain)
         system.l2.cpu_side = system.tol2bus.master
-        system.l2.mem_side = system.membus.slave
+        system.l2.mem_side = mem_port
 
     if options.memchecker:
         system.memchecker = MemChecker()

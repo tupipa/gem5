@@ -194,4 +194,16 @@ def config_mem(options, system):
 
     # Connect the controllers to the membus
     for i in xrange(len(system.mem_ctrls)):
-        system.mem_ctrls[i].port = system.membus.master
+        #system.mem_ctrls[i].port = system.membus.master
+        connectMemory(options, system.mem_ctrls[i], system.membus.master)
+
+# Note, slaveDevice should not include the port, e.g.
+# subsystem.mem_ctrls[i] not subsystem.mem_ctrls[i].port
+def connectMemory(options, slaveDevice, masterPort):
+    from m5.objects import CommMonitor
+    if options.monitor_memory:
+        slaveDevice.monitor = CommMonitor(trace_enable=True, trace_compress=True, trace_file=options.monitor_memory_file)
+        slaveDevice.port = slaveDevice.monitor.master
+        slaveDevice.monitor.slave = masterPort
+    else:
+        slaveDevice.port = masterPort
