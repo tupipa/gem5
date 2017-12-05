@@ -52,6 +52,7 @@
 #include "debug/Drain.hh"
 #include "debug/ExecFaulting.hh"
 #include "debug/SimpleCPU.hh"
+#include "debug/PointerDensity.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "mem/physical.hh"
@@ -345,9 +346,25 @@ AtomicSimpleCPU::readMem(Addr addr, uint8_t * data,
             if (req->isMmappedIpr())
                 dcache_latency += TheISA::handleIprRead(thread->getTC(), &pkt);
             else {
-                if (fastmem && system->isMemAddr(pkt.getAddr()))
+                if (fastmem && system->isMemAddr(pkt.getAddr())) {
                     system->getPhysMem().access(&pkt);
-                else
+                    // data ptr now contains the result
+                    uint32_t pid = tc->getCpuPtr()->getPid();
+                    if (pid != -1) { // skip bootup
+                        if (size == sizeof(Addr)) {
+                            Addr val = *((Addr*)data);
+                            DPRINTFR(PointerDensity, "%d,%d,0,%#lx,%d,%d,%d\n",
+                                                    pid, tc->getCpuPtr()->getTgid(),
+                                                    addr, size,
+                                                    virtvalid(tc, val), val==0);
+                        } else {
+                            DPRINTFR(PointerDensity, "%d,%d,0,%#lx,%d\n",
+                                                    pid,
+                                                    tc->getCpuPtr()->getTgid(),
+                                                    addr, size);
+                        }
+                    }
+                } else
                     dcache_latency += dcachePort.sendAtomic(&pkt);
             }
             dcache_access = true;
@@ -455,9 +472,23 @@ AtomicSimpleCPU::writeMem(uint8_t *data, unsigned size,
                     dcache_latency +=
                         TheISA::handleIprWrite(thread->getTC(), &pkt);
                 } else {
-                    if (fastmem && system->isMemAddr(pkt.getAddr()))
+                    if (fastmem && system->isMemAddr(pkt.getAddr())) {
+                        uint32_t pid = tc->getCpuPtr()->getPid();
+                        if (pid != -1) { // skip bootup
+                            if (size == sizeof(Addr)) {
+                                Addr val = *((Addr*)data);
+                                DPRINTFR(PointerDensity, "%d,%d,1,%#lx,%d,%d,%d\n",
+                                                        pid, tc->getCpuPtr()->getTgid(),
+                                                        addr, size,
+                                                        virtvalid(tc, val), val==0);
+                            } else {
+                                DPRINTFR(PointerDensity, "%d,%d,1,%#lx,%d\n",
+                                                        pid, tc->getCpuPtr()->getTgid(),
+                                                        addr, size);
+                            }
+                        }
                         system->getPhysMem().access(&pkt);
-                    else
+                    } else
                         dcache_latency += dcachePort.sendAtomic(&pkt);
                 }
                 dcache_access = true;
