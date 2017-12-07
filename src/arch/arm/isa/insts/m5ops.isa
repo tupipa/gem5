@@ -508,6 +508,18 @@ let {{
     decoder_output += BasicConstructor.subst(m5panicIop)
     exec_output += PredOpExecute.subst(m5panicIop)
 
+    m5toggletracingCode = '''
+    PseudoInst::toggletracing(xc->tcBase());
+    '''
+    m5toggletracingIop = InstObjParams("m5toggletracing", "M5toggletracing",
+        "PredOp",
+        { "code": m5toggletracingCode,
+          "predicate_test": predicateTest },
+          ["IsNonSpeculative"])
+    header_output += BasicDeclare.subst(m5toggletracingIop)
+    decoder_output += BasicConstructor.subst(m5toggletracingIop)
+    exec_output += PredOpExecute.subst(m5toggletracingIop)
+
     m5workbeginCode = '''PseudoInst::workbegin(
                           xc->tcBase(),
                           join32to64(R1, R0),

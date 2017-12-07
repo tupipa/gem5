@@ -196,8 +196,11 @@ pseudoInst(ThreadContext *tc, uint8_t func, uint8_t subfunc)
       case 0x56: // reserved2_func
       case 0x57: // reserved3_func
       case 0x58: // reserved4_func
-      case 0x59: // reserved5_func
         warn("Unimplemented m5 op (0x%x)\n", func);
+        break;
+
+      case 0x59: // toggletracing_func
+        toggletracing(tc);
         break;
 
       /* SE mode functions */
@@ -715,6 +718,16 @@ workend(ThreadContext *tc, uint64_t workid, uint64_t threadid)
             exitSimLoop("work items exit count reached");
         }
     }
+}
+
+void
+toggletracing(ThreadContext *tc)
+{
+    // Print on either side of the toggle so we always get a message that we
+    // called toggle
+    DPRINTF(PseudoInst, "PseudoInst::toggletracing()\n");
+    Trace::toggle();
+    DPRINTF(PseudoInst, "PseudoInst::toggletracing()\n");
 }
 
 } // namespace PseudoInst

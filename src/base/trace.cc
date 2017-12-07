@@ -87,6 +87,12 @@ setDebugLogger(Logger *logger)
         debug_logger = logger;
 }
 
+void
+toggle()
+{
+    enabled = !enabled;
+}
+
 ObjectMatch ignore;
 
 void

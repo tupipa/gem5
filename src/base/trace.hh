@@ -119,6 +119,9 @@ void setDebugLogger(Logger *logger);
 /** Enable debug logging */
 extern bool enabled;
 
+/** Toggle debug logging */
+void toggle();
+
 } // namespace Trace
 
 // This silly little class allows us to wrap a string in a functor

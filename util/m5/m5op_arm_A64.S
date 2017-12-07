@@ -88,6 +88,7 @@ func:
 #define PANIC INST(m5_op, 0, 0, panic_func)
 #define WORK_BEGIN INST(m5_op, 0, 0, work_begin_func)
 #define WORK_END INST(m5_op, 0, 0, work_end_func)
+#define TOGGLETRACING INST(m5_op, 0, 0, toggletracing_func)
 
 #define AN_BSM INST(m5_op, an_bsm, 0, annotate_func)
 #define AN_ESM INST(m5_op, an_esm, 0, annotate_func)
@@ -131,6 +132,7 @@ SIMPLE_OP(m5_addsymbol, ADDSYMBOL)
 SIMPLE_OP(m5_panic, PANIC)
 SIMPLE_OP(m5_work_begin, WORK_BEGIN)
 SIMPLE_OP(m5_work_end, WORK_END)
+SIMPLE_OP(m5_toggletracing, TOGGLETRACING)
 
 SIMPLE_OP(m5a_bsm, AN_BSM)
 SIMPLE_OP(m5a_esm, AN_ESM)
