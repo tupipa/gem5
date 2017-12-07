@@ -101,21 +101,6 @@ class DefaultCommit
 
     typedef O3ThreadState<Impl> Thread;
 
-    /** Event class used to schedule a squash due to a trap (fault or
-     * interrupt) to happen on a specific cycle.
-     */
-    class TrapEvent : public Event {
-      private:
-        DefaultCommit<Impl> *commit;
-        ThreadID tid;
-
-      public:
-        TrapEvent(DefaultCommit<Impl> *_commit, ThreadID _tid);
-
-        void process();
-        const char *description() const;
-    };
-
     /** Overall commit status. Used to determine if the CPU can deschedule
      * itself due to a lack of activity.
      */
@@ -154,6 +139,11 @@ class DefaultCommit
     /** Probe Points. */
     ProbePointArg<DynInstPtr> *ppCommit;
     ProbePointArg<DynInstPtr> *ppCommitStall;
+    /** To probe when an instruction is squashed */
+    ProbePointArg<DynInstPtr> *ppSquash;
+
+    /** Mark the thread as processing a trap. */
+    void processTrapEvent(ThreadID tid);
 
   public:
     /** Construct a DefaultCommit with the given parameters. */
@@ -233,7 +223,7 @@ class DefaultCommit
     size_t numROBFreeEntries(ThreadID tid);
 
     /** Generates an event to schedule a squash due to a trap. */
-    void generateTrapEvent(ThreadID tid);
+    void generateTrapEvent(ThreadID tid, Fault inst_fault);
 
     /** Records that commit needs to initiate a squash due to an
      * external state update through the TC.
@@ -515,6 +505,8 @@ class DefaultCommit
     Stats::Vector statComMembars;
     /** Total number of committed branches. */
     Stats::Vector statComBranches;
+    /** Total number of vector instructions */
+    Stats::Vector statComVector;
     /** Total number of floating point instructions */
     Stats::Vector statComFloating;
     /** Total number of integer instructions */

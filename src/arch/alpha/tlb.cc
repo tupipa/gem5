@@ -30,13 +30,15 @@
  *          Andrew Schultz
  */
 
+#include "arch/alpha/tlb.hh"
+
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "arch/alpha/faults.hh"
 #include "arch/alpha/pagetable.hh"
-#include "arch/alpha/tlb.hh"
 #include "arch/generic/debugfaults.hh"
 #include "base/inifile.hh"
 #include "base/str.hh"
@@ -62,22 +64,20 @@ bool uncacheBit40 = false;
 #define MODE2MASK(X) (1 << (X))
 
 TLB::TLB(const Params *p)
-    : BaseTLB(p), size(p->size), nlu(0)
+    : BaseTLB(p), table(p->size), nlu(0)
 {
-    table = new TlbEntry[size];
-    memset(table, 0, sizeof(TlbEntry) * size);
     flushCache();
 }
 
 TLB::~TLB()
 {
-    if (table)
-        delete [] table;
 }
 
 void
 TLB::regStats()
 {
+    BaseTLB::regStats();
+
     fetch_hits
         .name(name() + ".fetch_hits")
         .desc("ITB hits");
@@ -232,9 +232,9 @@ TLB::checkCacheability(RequestPtr &req, bool itb)
             req->setPaddr(req->getPaddr() & PAddrUncachedMask);
         }
         // We shouldn't be able to read from an uncachable address in Alpha as
-        // we don't have a ROM and we don't want to try to fetch from a device 
-        // register as we destroy any data that is clear-on-read. 
-        if (req->isUncacheable() && itb) 
+        // we don't have a ROM and we don't want to try to fetch from a device
+        // register as we destroy any data that is clear-on-read.
+        if (req->isUncacheable() && itb)
             return std::make_shared<UnimpFault>(
                 "CPU trying to fetch from uncached I/O");
 
@@ -283,7 +283,7 @@ void
 TLB::flushAll()
 {
     DPRINTF(TLB, "flushAll\n");
-    memset(table, 0, sizeof(TlbEntry) * size);
+    std::fill(table.begin(), table.end(), TlbEntry());
     flushCache();
     lookupTable.clear();
     nlu = 0;
@@ -345,25 +345,26 @@ TLB::flushAddr(Addr addr, uint8_t asn)
 
 
 void
-TLB::serialize(ostream &os)
+TLB::serialize(CheckpointOut &cp) const
 {
+    const unsigned size(table.size());
     SERIALIZE_SCALAR(size);
     SERIALIZE_SCALAR(nlu);
 
-    for (int i = 0; i < size; i++) {
-        nameOut(os, csprintf("%s.Entry%d", name(), i));
-        table[i].serialize(os);
-    }
+    for (int i = 0; i < size; i++)
+        table[i].serializeSection(cp, csprintf("Entry%d", i));
 }
 
 void
-TLB::unserialize(Checkpoint *cp, const string &section)
+TLB::unserialize(CheckpointIn &cp)
 {
+    unsigned size(0);
     UNSERIALIZE_SCALAR(size);
     UNSERIALIZE_SCALAR(nlu);
 
+    table.resize(size);
     for (int i = 0; i < size; i++) {
-        table[i].unserialize(cp, csprintf("%s.Entry%d", section, i));
+        table[i].unserializeSection(cp, csprintf("Entry%d", i));
         if (table[i].valid) {
             lookupTable.insert(make_pair(table[i].tag, i));
         }

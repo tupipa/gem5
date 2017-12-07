@@ -29,8 +29,9 @@
  */
 
 #include "arch/x86/decoder.hh"
+
 #include "arch/x86/regs/misc.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/Decoder.hh"
@@ -48,6 +49,8 @@ Decoder::doResetState()
 
     emi.rex = 0;
     emi.legacy = 0;
+    emi.vex = 0;
+
     emi.opcode.type = BadOpcode;
     emi.opcode.op = 0;
 
@@ -92,6 +95,18 @@ Decoder::process()
         switch (state) {
           case PrefixState:
             state = doPrefixState(nextByte);
+            break;
+          case Vex2Of2State:
+            state = doVex2Of2State(nextByte);
+            break;
+          case Vex2Of3State:
+            state = doVex2Of3State(nextByte);
+            break;
+          case Vex3Of3State:
+            state = doVex3Of3State(nextByte);
+            break;
+          case VexOpcodeState:
+            state = doVexOpcodeState(nextByte);
             break;
           case OneByteOpcodeState:
             state = doOneByteOpcodeState(nextByte);
@@ -206,13 +221,154 @@ Decoder::doPrefixState(uint8_t nextByte)
         DPRINTF(Decoder, "Found Rex prefix %#x.\n", nextByte);
         emi.rex = nextByte;
         break;
+      case Vex2Prefix:
+        DPRINTF(Decoder, "Found VEX two-byte prefix %#x.\n", nextByte);
+        emi.vex.present = 1;
+        nextState = Vex2Of2State;
+        break;
+      case Vex3Prefix:
+        DPRINTF(Decoder, "Found VEX three-byte prefix %#x.\n", nextByte);
+        emi.vex.present = 1;
+        nextState = Vex2Of3State;
+        break;
       case 0:
         nextState = OneByteOpcodeState;
         break;
+
       default:
         panic("Unrecognized prefix %#x\n", nextByte);
     }
     return nextState;
+}
+
+Decoder::State
+Decoder::doVex2Of2State(uint8_t nextByte)
+{
+    consumeByte();
+    Vex2Of2 vex = nextByte;
+
+    emi.rex.r = !vex.r;
+
+    emi.vex.l = vex.l;
+    emi.vex.v = ~vex.v;
+
+    switch (vex.p) {
+      case 0:
+        break;
+      case 1:
+        emi.legacy.op = 1;
+        break;
+      case 2:
+        emi.legacy.rep = 1;
+        break;
+      case 3:
+        emi.legacy.repne = 1;
+        break;
+    }
+
+    emi.opcode.type = TwoByteOpcode;
+
+    return VexOpcodeState;
+}
+
+Decoder::State
+Decoder::doVex2Of3State(uint8_t nextByte)
+{
+    if (emi.mode.submode != SixtyFourBitMode && bits(nextByte, 7, 6) == 0x3) {
+        // This was actually an LDS instruction. Reroute to that path.
+        emi.vex.present = 0;
+        emi.opcode.type = OneByteOpcode;
+        emi.opcode.op = 0xC4;
+        return processOpcode(ImmediateTypeOneByte, UsesModRMOneByte,
+                             nextByte >= 0xA0 && nextByte <= 0xA3);
+    }
+
+    consumeByte();
+    Vex2Of3 vex = nextByte;
+
+    emi.rex.r = !vex.r;
+    emi.rex.x = !vex.x;
+    emi.rex.b = !vex.b;
+
+    switch (vex.m) {
+      case 1:
+        emi.opcode.type = TwoByteOpcode;
+        break;
+      case 2:
+        emi.opcode.type = ThreeByte0F38Opcode;
+        break;
+      case 3:
+        emi.opcode.type = ThreeByte0F3AOpcode;
+        break;
+      default:
+        // These encodings are reserved. Pretend this was an undefined
+        // instruction so the main decoder will behave correctly, and stop
+        // trying to interpret bytes.
+        emi.opcode.type = TwoByteOpcode;
+        emi.opcode.op = 0x0B;
+        instDone = true;
+        return ResetState;
+    }
+    return Vex3Of3State;
+}
+
+Decoder::State
+Decoder::doVex3Of3State(uint8_t nextByte)
+{
+    if (emi.mode.submode != SixtyFourBitMode && bits(nextByte, 7, 6) == 0x3) {
+        // This was actually an LES instruction. Reroute to that path.
+        emi.vex.present = 0;
+        emi.opcode.type = OneByteOpcode;
+        emi.opcode.op = 0xC5;
+        return processOpcode(ImmediateTypeOneByte, UsesModRMOneByte,
+                             nextByte >= 0xA0 && nextByte <= 0xA3);
+    }
+
+    consumeByte();
+    Vex3Of3 vex = nextByte;
+
+    emi.rex.w = vex.w;
+
+    emi.vex.l = vex.l;
+    emi.vex.v = ~vex.v;
+
+    switch (vex.p) {
+      case 0:
+        break;
+      case 1:
+        emi.legacy.op = 1;
+        break;
+      case 2:
+        emi.legacy.rep = 1;
+        break;
+      case 3:
+        emi.legacy.repne = 1;
+        break;
+    }
+
+    return VexOpcodeState;
+}
+
+Decoder::State
+Decoder::doVexOpcodeState(uint8_t nextByte)
+{
+    DPRINTF(Decoder, "Found VEX opcode %#x.\n", nextByte);
+
+    emi.opcode.op = nextByte;
+    consumeByte();
+
+    switch (emi.opcode.type) {
+      case TwoByteOpcode:
+        return processOpcode(ImmediateTypeTwoByte, UsesModRMTwoByte);
+      case ThreeByte0F38Opcode:
+        return processOpcode(ImmediateTypeThreeByte0F38,
+                             UsesModRMThreeByte0F38);
+      case ThreeByte0F3AOpcode:
+        return processOpcode(ImmediateTypeThreeByte0F3A,
+                             UsesModRMThreeByte0F3A);
+      default:
+        panic("Unrecognized opcode type %d.\n", emi.opcode.type);
+    }
 }
 
 // Load the first opcode byte. Determine if there are more opcode bytes, and
@@ -222,9 +378,10 @@ Decoder::doOneByteOpcodeState(uint8_t nextByte)
 {
     State nextState = ErrorState;
     consumeByte();
+
     if (nextByte == 0x0f) {
-        nextState = TwoByteOpcodeState;
         DPRINTF(Decoder, "Found opcode escape byte %#x.\n", nextByte);
+        nextState = TwoByteOpcodeState;
     } else {
         DPRINTF(Decoder, "Found one byte opcode %#x.\n", nextByte);
         emi.opcode.type = OneByteOpcode;
@@ -312,7 +469,7 @@ Decoder::processOpcode(ByteTable &immTable, ByteTable &modrmTable,
     //Figure out the effective address size. This can be overriden to
     //a fixed value at the decoder level.
     int logAddrSize;
-    if(emi.legacy.addr)
+    if (emi.legacy.addr)
         logAddrSize = altAddr;
     else
         logAddrSize = defAddr;
@@ -336,7 +493,7 @@ Decoder::processOpcode(ByteTable &immTable, ByteTable &modrmTable,
     if (modrmTable[opcode]) {
         nextState = ModRMState;
     } else {
-        if(immediateSize) {
+        if (immediateSize) {
             nextState = ImmediateState;
         } else {
             instDone = true;
@@ -353,8 +510,7 @@ Decoder::State
 Decoder::doModRMState(uint8_t nextByte)
 {
     State nextState = ErrorState;
-    ModRM modRM;
-    modRM = nextByte;
+    ModRM modRM = nextByte;
     DPRINTF(Decoder, "Found modrm byte %#x.\n", nextByte);
     if (defOp == 1) {
         //figure out 16 bit displacement size
@@ -388,9 +544,9 @@ Decoder::doModRMState(uint8_t nextByte)
     if (modRM.rm == 4 && modRM.mod != 3) {
             // && in 32/64 bit mode)
         nextState = SIBState;
-    } else if(displacementSize) {
+    } else if (displacementSize) {
         nextState = DisplacementState;
-    } else if(immediateSize) {
+    } else if (immediateSize) {
         nextState = ImmediateState;
     } else {
         instDone = true;
@@ -416,7 +572,7 @@ Decoder::doSIBState(uint8_t nextByte)
         displacementSize = 4;
     if (displacementSize) {
         nextState = DisplacementState;
-    } else if(immediateSize) {
+    } else if (immediateSize) {
         nextState = ImmediateState;
     } else {
         instDone = true;
@@ -439,7 +595,7 @@ Decoder::doDisplacementState()
     DPRINTF(Decoder, "Collecting %d byte displacement, got %d bytes.\n",
             displacementSize, immediateCollected);
 
-    if(displacementSize == immediateCollected) {
+    if (displacementSize == immediateCollected) {
         //Reset this for other immediates.
         immediateCollected = 0;
         //Sign extend the displacement
@@ -459,7 +615,7 @@ Decoder::doDisplacementState()
         }
         DPRINTF(Decoder, "Collected displacement %#x.\n",
                 emi.displacement);
-        if(immediateSize) {
+        if (immediateSize) {
             nextState = ImmediateState;
         } else {
             instDone = true;
@@ -487,7 +643,7 @@ Decoder::doImmediateState()
     DPRINTF(Decoder, "Collecting %d byte immediate, got %d bytes.\n",
             immediateSize, immediateCollected);
 
-    if(immediateSize == immediateCollected)
+    if (immediateSize == immediateCollected)
     {
         //Reset this for other immediates.
         immediateCollected = 0;

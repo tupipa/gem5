@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013, 2015 ARM Limited
+# Copyright (c) 2012-2013, 2015-2017 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -43,6 +43,7 @@
 
 import sys
 
+from m5.SimObject import *
 from m5.defines import buildEnv
 from m5.params import *
 from m5.proxy import *
@@ -59,49 +60,53 @@ if buildEnv['TARGET_ISA'] == 'alpha':
     from AlphaTLB import AlphaDTB, AlphaITB
     from AlphaInterrupts import AlphaInterrupts
     from AlphaISA import AlphaISA
-    isa_class = AlphaISA
+    default_isa_class = AlphaISA
 elif buildEnv['TARGET_ISA'] == 'sparc':
     from SparcTLB import SparcTLB
     from SparcInterrupts import SparcInterrupts
     from SparcISA import SparcISA
-    isa_class = SparcISA
+    default_isa_class = SparcISA
 elif buildEnv['TARGET_ISA'] == 'x86':
     from X86TLB import X86TLB
     from X86LocalApic import X86LocalApic
     from X86ISA import X86ISA
-    isa_class = X86ISA
+    default_isa_class = X86ISA
 elif buildEnv['TARGET_ISA'] == 'mips':
     from MipsTLB import MipsTLB
     from MipsInterrupts import MipsInterrupts
     from MipsISA import MipsISA
-    isa_class = MipsISA
+    default_isa_class = MipsISA
 elif buildEnv['TARGET_ISA'] == 'arm':
     from ArmTLB import ArmTLB, ArmStage2IMMU, ArmStage2DMMU
     from ArmInterrupts import ArmInterrupts
     from ArmISA import ArmISA
-    isa_class = ArmISA
+    default_isa_class = ArmISA
 elif buildEnv['TARGET_ISA'] == 'power':
     from PowerTLB import PowerTLB
     from PowerInterrupts import PowerInterrupts
     from PowerISA import PowerISA
-    isa_class = PowerISA
+    default_isa_class = PowerISA
+elif buildEnv['TARGET_ISA'] == 'riscv':
+    from RiscvTLB import RiscvTLB
+    from RiscvInterrupts import RiscvInterrupts
+    from RiscvISA import RiscvISA
+    default_isa_class = RiscvISA
 
 class BaseCPU(MemObject):
     type = 'BaseCPU'
     abstract = True
     cxx_header = "cpu/base.hh"
 
-    @classmethod
-    def export_methods(cls, code):
-        code('''
-    void switchOut();
-    void takeOverFrom(BaseCPU *cpu);
-    bool switchedOut();
-    void flushTLBs();
-    Counter totalInsts();
-    void scheduleInstStop(ThreadID tid, Counter insts, const char *cause);
-    void scheduleLoadStop(ThreadID tid, Counter loads, const char *cause);
-''')
+    cxx_exports = [
+        PyBindMethod("switchOut"),
+        PyBindMethod("takeOverFrom"),
+        PyBindMethod("switchedOut"),
+        PyBindMethod("flushTLBs"),
+        PyBindMethod("totalInsts"),
+        PyBindMethod("scheduleInstStop"),
+        PyBindMethod("scheduleLoadStop"),
+        PyBindMethod("getCurrentInstCount"),
+    ]
 
     @classmethod
     def memory_mode(cls):
@@ -130,11 +135,19 @@ class BaseCPU(MemObject):
     cpu_id = Param.Int(-1, "CPU identifier")
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
+    pwr_gating_latency = Param.Cycles(300,
+        "Latency to enter power gating state when all contexts are suspended")
+
+    power_gating_on_idle = Param.Bool(False, "Control whether the core goes "\
+        "to the OFF power state after all thread are disabled for "\
+        "pwr_gating_latency cycles")
 
     function_trace = Param.Bool(False, "Enable function trace")
     function_trace_start = Param.Tick(0, "Tick to start function trace")
 
     checker = Param.BaseCPU(NULL, "checker CPU")
+
+    syscallRetryLatency = Param.Cycles(10000, "Cycles to wait until retry")
 
     do_checkpoint_insts = Param.Bool(True,
         "enable checkpoint pseudo instructions")
@@ -144,46 +157,55 @@ class BaseCPU(MemObject):
     profile = Param.Latency('0ns', "trace the kernel stack")
     do_quiesce = Param.Bool(True, "enable quiesce instructions")
 
+    wait_for_remote_gdb = Param.Bool(False,
+        "Wait for a remote GDB connection");
+
     workload = VectorParam.Process([], "processes to run")
 
     if buildEnv['TARGET_ISA'] == 'sparc':
         dtb = Param.SparcTLB(SparcTLB(), "Data TLB")
         itb = Param.SparcTLB(SparcTLB(), "Instruction TLB")
-        interrupts = Param.SparcInterrupts(
-                NULL, "Interrupt Controller")
-        isa = VectorParam.SparcISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.SparcInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.SparcISA([], "ISA instance")
     elif buildEnv['TARGET_ISA'] == 'alpha':
         dtb = Param.AlphaTLB(AlphaDTB(), "Data TLB")
         itb = Param.AlphaTLB(AlphaITB(), "Instruction TLB")
-        interrupts = Param.AlphaInterrupts(
-                NULL, "Interrupt Controller")
-        isa = VectorParam.AlphaISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.AlphaInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.AlphaISA([], "ISA instance")
     elif buildEnv['TARGET_ISA'] == 'x86':
         dtb = Param.X86TLB(X86TLB(), "Data TLB")
         itb = Param.X86TLB(X86TLB(), "Instruction TLB")
-        interrupts = Param.X86LocalApic(NULL, "Interrupt Controller")
-        isa = VectorParam.X86ISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.X86LocalApic([], "Interrupt Controller")
+        isa = VectorParam.X86ISA([], "ISA instance")
     elif buildEnv['TARGET_ISA'] == 'mips':
         dtb = Param.MipsTLB(MipsTLB(), "Data TLB")
         itb = Param.MipsTLB(MipsTLB(), "Instruction TLB")
-        interrupts = Param.MipsInterrupts(
-                NULL, "Interrupt Controller")
-        isa = VectorParam.MipsISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.MipsInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.MipsISA([], "ISA instance")
     elif buildEnv['TARGET_ISA'] == 'arm':
         dtb = Param.ArmTLB(ArmTLB(), "Data TLB")
         itb = Param.ArmTLB(ArmTLB(), "Instruction TLB")
         istage2_mmu = Param.ArmStage2MMU(ArmStage2IMMU(), "Stage 2 trans")
         dstage2_mmu = Param.ArmStage2MMU(ArmStage2DMMU(), "Stage 2 trans")
-        interrupts = Param.ArmInterrupts(
-                NULL, "Interrupt Controller")
-        isa = VectorParam.ArmISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.ArmInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.ArmISA([], "ISA instance")
     elif buildEnv['TARGET_ISA'] == 'power':
         UnifiedTLB = Param.Bool(True, "Is this a Unified TLB?")
         dtb = Param.PowerTLB(PowerTLB(), "Data TLB")
         itb = Param.PowerTLB(PowerTLB(), "Instruction TLB")
-        interrupts = Param.PowerInterrupts(
-                NULL, "Interrupt Controller")
-        isa = VectorParam.PowerISA([ isa_class() ], "ISA instance")
+        interrupts = VectorParam.PowerInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.PowerISA([], "ISA instance")
+    elif buildEnv['TARGET_ISA'] == 'riscv':
+        dtb = Param.RiscvTLB(RiscvTLB(), "Data TLB")
+        itb = Param.RiscvTLB(RiscvTLB(), "Instruction TLB")
+        interrupts = VectorParam.RiscvInterrupts(
+                [], "Interrupt Controller")
+        isa = VectorParam.RiscvISA([], "ISA instance")
     else:
         print "Don't know what TLB to use for ISA %s" % \
             buildEnv['TARGET_ISA']
@@ -218,27 +240,32 @@ class BaseCPU(MemObject):
     _uncached_slave_ports = []
     _uncached_master_ports = []
     if buildEnv['TARGET_ISA'] == 'x86':
-        _uncached_slave_ports += ["interrupts.pio", "interrupts.int_slave"]
-        _uncached_master_ports += ["interrupts.int_master"]
+        _uncached_slave_ports += ["interrupts[0].pio",
+                                  "interrupts[0].int_slave"]
+        _uncached_master_ports += ["interrupts[0].int_master"]
 
     def createInterruptController(self):
         if buildEnv['TARGET_ISA'] == 'sparc':
-            self.interrupts = SparcInterrupts()
+            self.interrupts = [SparcInterrupts() for i in xrange(self.numThreads)]
         elif buildEnv['TARGET_ISA'] == 'alpha':
-            self.interrupts = AlphaInterrupts()
+            self.interrupts = [AlphaInterrupts() for i in xrange(self.numThreads)]
         elif buildEnv['TARGET_ISA'] == 'x86':
             self.apic_clk_domain = DerivedClockDomain(clk_domain =
                                                       Parent.clk_domain,
                                                       clk_divider = 16)
-            self.interrupts = X86LocalApic(clk_domain = self.apic_clk_domain,
+            self.interrupts = [X86LocalApic(clk_domain = self.apic_clk_domain,
                                            pio_addr=0x2000000000000000)
+                               for i in xrange(self.numThreads)]
             _localApic = self.interrupts
         elif buildEnv['TARGET_ISA'] == 'mips':
-            self.interrupts = MipsInterrupts()
+            self.interrupts = [MipsInterrupts() for i in xrange(self.numThreads)]
         elif buildEnv['TARGET_ISA'] == 'arm':
-            self.interrupts = ArmInterrupts()
+            self.interrupts = [ArmInterrupts() for i in xrange(self.numThreads)]
         elif buildEnv['TARGET_ISA'] == 'power':
-            self.interrupts = PowerInterrupts()
+            self.interrupts = [PowerInterrupts() for i in xrange(self.numThreads)]
+        elif buildEnv['TARGET_ISA'] == 'riscv':
+            self.interrupts = \
+                [RiscvInterrupts() for i in xrange(self.numThreads)]
         else:
             print "Don't know what Interrupt Controller to use for ISA %s" % \
                 buildEnv['TARGET_ISA']
@@ -292,7 +319,14 @@ class BaseCPU(MemObject):
         self._cached_ports = ['l2cache.mem_side']
 
     def createThreads(self):
-        self.isa = [ isa_class() for i in xrange(self.numThreads) ]
+        # If no ISAs have been created, assume that the user wants the
+        # default ISA.
+        if len(self.isa) == 0:
+            self.isa = [ default_isa_class() for i in xrange(self.numThreads) ]
+        else:
+            if len(self.isa) != int(self.numThreads):
+                raise RuntimeError("Number of ISA instances doesn't "
+                                   "match thread count")
         if self.checker != NULL:
             self.checker.createThreads()
 

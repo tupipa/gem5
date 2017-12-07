@@ -30,17 +30,22 @@
 
 #include <sys/ioctl.h>
 #include <sys/types.h>
+
 #if defined(__sun__) || defined(__SUNPRO_CC)
 #include <sys/file.h>
+
 #endif
+
+#include "base/pollevent.hh"
 
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <csignal>
+#include <cstring>
 
-#include "base/misc.hh"
-#include "base/pollevent.hh"
+#include "base/logging.hh"
 #include "base/types.hh"
 #include "sim/async.hh"
 #include "sim/core.hh"
@@ -88,7 +93,7 @@ PollEvent::enable()
 }
 
 void
-PollEvent::serialize(ostream &os)
+PollEvent::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(pfd.fd);
     SERIALIZE_SCALAR(pfd.events);
@@ -96,7 +101,7 @@ PollEvent::serialize(ostream &os)
 }
 
 void
-PollEvent::unserialize(Checkpoint *cp, const std::string &section)
+PollEvent::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(pfd.fd);
     UNSERIALIZE_SCALAR(pfd.events);
@@ -197,25 +202,43 @@ PollQueue::service()
     }
 }
 
+template <class ArgT>
+static int fcntlHelper(int fd, int cmd, ArgT arg)
+{
+    int retval = fcntl(fd, cmd, arg);
+    if (retval == -1) {
+        char *errstr = strerror(errno);
+        panic("fcntl(%d, %d, %s): \"%s\" when setting up async IO.\n",
+              errstr, fd, cmd, arg);
+    }
+    return retval;
+}
+
+static int fcntlHelper(int fd, int cmd)
+{
+    int retval = fcntl(fd, cmd);
+    if (retval == -1) {
+        char *errstr = strerror(errno);
+        panic("fcntl(%d, %d): \"%s\" when setting up async IO.\n",
+              errstr, fd, cmd);
+    }
+    return retval;
+}
+
 void
 PollQueue::setupAsyncIO(int fd, bool set)
 {
-    int flags = fcntl(fd, F_GETFL);
-    if (flags == -1)
-        panic("Could not set up async IO");
+    int flags = fcntlHelper(fd, F_GETFL);
 
     if (set)
         flags |= FASYNC;
     else
         flags &= ~(FASYNC);
 
-    if (set) {
-      if (fcntl(fd, F_SETOWN, getpid()) == -1)
-        panic("Could not set up async IO");
-    }
+    if (set)
+        fcntlHelper(fd, F_SETOWN, getpid());
 
-    if (fcntl(fd, F_SETFL, flags) == -1)
-        panic("Could not set up async IO");
+    fcntlHelper(fd, F_SETFL, flags);
 
     // The file descriptor might already have events pending. We won't
     // see them if they occurred before we set the FASYNC

@@ -28,12 +28,13 @@
  * Authors: Ali Saidi
  */
 
+#include "arch/sparc/tlb.hh"
+
 #include <cstring>
 
 #include "arch/sparc/asi.hh"
 #include "arch/sparc/faults.hh"
 #include "arch/sparc/registers.hh"
-#include "arch/sparc/tlb.hh"
 #include "base/bitfield.hh"
 #include "base/trace.hh"
 #include "cpu/base.hh"
@@ -1022,7 +1023,7 @@ TLB::doMmuRegRead(ThreadContext *tc, Packet *pkt)
         {
             SparcISA::Interrupts * interrupts =
                 dynamic_cast<SparcISA::Interrupts *>(
-                        tc->getCpuPtr()->getInterruptController());
+                        tc->getCpuPtr()->getInterruptController(0));
             pkt->set(interrupts->get_vec(IT_INT_VEC));
         }
         break;
@@ -1030,9 +1031,9 @@ TLB::doMmuRegRead(ThreadContext *tc, Packet *pkt)
         {
             SparcISA::Interrupts * interrupts =
                 dynamic_cast<SparcISA::Interrupts *>(
-                        tc->getCpuPtr()->getInterruptController());
+                        tc->getCpuPtr()->getInterruptController(0));
             temp = findMsbSet(interrupts->get_vec(IT_INT_VEC));
-            tc->getCpuPtr()->clearInterrupt(IT_INT_VEC, temp);
+            tc->getCpuPtr()->clearInterrupt(0, IT_INT_VEC, temp);
             pkt->set(temp);
         }
         break;
@@ -1278,16 +1279,16 @@ TLB::doMmuRegWrite(ThreadContext *tc, Packet *pkt)
             // clear all the interrupts that aren't set in the write
             SparcISA::Interrupts * interrupts =
                 dynamic_cast<SparcISA::Interrupts *>(
-                        tc->getCpuPtr()->getInterruptController());
+                        tc->getCpuPtr()->getInterruptController(0));
             while (interrupts->get_vec(IT_INT_VEC) & data) {
                 msb = findMsbSet(interrupts->get_vec(IT_INT_VEC) & data);
-                tc->getCpuPtr()->clearInterrupt(IT_INT_VEC, msb);
+                tc->getCpuPtr()->clearInterrupt(0, IT_INT_VEC, msb);
             }
         }
         break;
       case ASI_SWVR_UDB_INTR_W:
             tc->getSystemPtr()->threadContexts[bits(data,12,8)]->getCpuPtr()->
-            postInterrupt(bits(data, 5, 0), 0);
+            postInterrupt(0, bits(data, 5, 0), 0);
         break;
       default:
 doMmuWriteError:
@@ -1353,23 +1354,18 @@ TLB::MakeTsbPtr(TsbPageSize ps, uint64_t tag_access, uint64_t c0_tsb,
 }
 
 void
-TLB::serialize(std::ostream &os)
+TLB::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(size);
     SERIALIZE_SCALAR(usedEntries);
     SERIALIZE_SCALAR(lastReplaced);
 
     // convert the pointer based free list into an index based one
-    int *free_list = (int*)malloc(sizeof(int) * size);
-    int cntr = 0;
-    std::list<TlbEntry*>::iterator i;
-    i = freeList.begin();
-    while (i != freeList.end()) {
-        free_list[cntr++] = ((size_t)*i - (size_t)tlb)/ sizeof(TlbEntry);
-        i++;
-    }
-    SERIALIZE_SCALAR(cntr);
-    SERIALIZE_ARRAY(free_list,  cntr);
+    std::vector<int> free_list;
+    for (const TlbEntry *entry : freeList)
+        free_list.push_back(entry - tlb);
+
+    SERIALIZE_CONTAINER(free_list);
 
     SERIALIZE_SCALAR(c0_tsb_ps0);
     SERIALIZE_SCALAR(c0_tsb_ps1);
@@ -1381,31 +1377,28 @@ TLB::serialize(std::ostream &os)
     SERIALIZE_SCALAR(tag_access);
 
     for (int x = 0; x < size; x++) {
-        nameOut(os, csprintf("%s.PTE%d", name(), x));
-        tlb[x].serialize(os);
+        ScopedCheckpointSection sec(cp, csprintf("PTE%d", x));
+        tlb[x].serialize(cp);
     }
     SERIALIZE_SCALAR(sfar);
 }
 
 void
-TLB::unserialize(Checkpoint *cp, const std::string &section)
+TLB::unserialize(CheckpointIn &cp)
 {
     int oldSize;
 
-    paramIn(cp, section, "size", oldSize);
+    paramIn(cp, "size", oldSize);
     if (oldSize != size)
         panic("Don't support unserializing different sized TLBs\n");
     UNSERIALIZE_SCALAR(usedEntries);
     UNSERIALIZE_SCALAR(lastReplaced);
 
-    int cntr;
-    UNSERIALIZE_SCALAR(cntr);
-
-    int *free_list = (int*)malloc(sizeof(int) * cntr);
+    std::vector<int> free_list;
+    UNSERIALIZE_CONTAINER(free_list);
     freeList.clear();
-    UNSERIALIZE_ARRAY(free_list,  cntr);
-    for (int x = 0; x < cntr; x++)
-        freeList.push_back(&tlb[free_list[x]]);
+    for (int idx : free_list)
+        freeList.push_back(&tlb[idx]);
 
     UNSERIALIZE_SCALAR(c0_tsb_ps0);
     UNSERIALIZE_SCALAR(c0_tsb_ps1);
@@ -1418,7 +1411,8 @@ TLB::unserialize(Checkpoint *cp, const std::string &section)
 
     lookupTable.clear();
     for (int x = 0; x < size; x++) {
-        tlb[x].unserialize(cp, csprintf("%s.PTE%d", section, x));
+        ScopedCheckpointSection sec(cp, csprintf("PTE%d", x));
+        tlb[x].unserialize(cp);
         if (tlb[x].valid)
             lookupTable.insert(tlb[x].range, &tlb[x]);
 

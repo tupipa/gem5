@@ -11,7 +11,7 @@
  * unmodified and in its entirety in all distributions of the software,
  * modified or unmodified, in source code or in binary form.
  *
- * Copyright (c) 2009 Advanced Micro Devices, Inc.
+ * Copyright (c) 2009-2013 Advanced Micro Devices, Inc.
  * Copyright (c) 2011 Mark D. Hill and David A. Wood
  * All rights reserved.
  *
@@ -39,35 +39,38 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "mem/ruby/system/RubyPort.hh"
+
 #include "cpu/testers/rubytest/RubyTester.hh"
 #include "debug/Config.hh"
 #include "debug/Drain.hh"
 #include "debug/Ruby.hh"
 #include "mem/protocol/AccessPermission.hh"
 #include "mem/ruby/slicc_interface/AbstractController.hh"
-#include "mem/ruby/system/RubyPort.hh"
 #include "mem/simple_mem.hh"
 #include "sim/full_system.hh"
 #include "sim/system.hh"
 
 RubyPort::RubyPort(const Params *p)
-    : MemObject(p), m_version(p->version), m_controller(NULL),
-      m_mandatory_q_ptr(NULL), m_usingRubyTester(p->using_ruby_tester),
-      system(p->system),
+    : MemObject(p), m_ruby_system(p->ruby_system), m_version(p->version),
+      m_controller(NULL), m_mandatory_q_ptr(NULL),
+      m_usingRubyTester(p->using_ruby_tester), system(p->system),
       pioMasterPort(csprintf("%s.pio-master-port", name()), this),
       pioSlavePort(csprintf("%s.pio-slave-port", name()), this),
       memMasterPort(csprintf("%s.mem-master-port", name()), this),
       memSlavePort(csprintf("%s-mem-slave-port", name()), this,
-          p->ruby_system, p->ruby_system->getAccessBackingStore(), -1),
-      gotAddrRanges(p->port_master_connection_count), drainManager(NULL)
+                   p->ruby_system->getAccessBackingStore(), -1,
+                   p->no_retry_on_stall),
+      gotAddrRanges(p->port_master_connection_count),
+      m_isCPUSequencer(p->is_cpu_sequencer)
 {
     assert(m_version != -1);
 
     // create the slave ports based on the number of connected ports
     for (size_t i = 0; i < p->port_slave_connection_count; ++i) {
         slave_ports.push_back(new MemSlavePort(csprintf("%s.slave%d", name(),
-            i), this, p->ruby_system,
-            p->ruby_system->getAccessBackingStore(), i));
+            i), this, p->ruby_system->getAccessBackingStore(),
+            i, p->no_retry_on_stall));
     }
 
     // create the master ports based on the number of connected ports
@@ -82,7 +85,6 @@ RubyPort::init()
 {
     assert(m_controller != NULL);
     m_mandatory_q_ptr = m_controller->getMandatoryQueue();
-    m_mandatory_q_ptr->setSender(this);
 }
 
 BaseMasterPort &
@@ -158,10 +160,11 @@ RubyPort::MemMasterPort::MemMasterPort(const std::string &_name,
 }
 
 RubyPort::MemSlavePort::MemSlavePort(const std::string &_name, RubyPort *_port,
-                                     RubySystem *_system,
-                                     bool _access_backing_store, PortID id)
+                                     bool _access_backing_store, PortID id,
+                                     bool _no_retry_on_stall)
     : QueuedSlavePort(_name, _port, queue, id), queue(*_port, *this),
-      ruby_system(_system), access_backing_store(_access_backing_store)
+      access_backing_store(_access_backing_store),
+      no_retry_on_stall(_no_retry_on_stall)
 {
     DPRINTF(RubyPort, "Created slave memport on ruby sequencer %s\n", _name);
 }
@@ -169,12 +172,12 @@ RubyPort::MemSlavePort::MemSlavePort(const std::string &_name, RubyPort *_port,
 bool
 RubyPort::PioMasterPort::recvTimingResp(PacketPtr pkt)
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
+    RubyPort *rp = static_cast<RubyPort *>(&owner);
     DPRINTF(RubyPort, "Response for address: 0x%#x\n", pkt->getAddr());
 
     // send next cycle
-    ruby_port->pioSlavePort.schedTimingResp(
-            pkt, curTick() + g_system_ptr->clockPeriod());
+    rp->pioSlavePort.schedTimingResp(
+            pkt, curTick() + rp->m_ruby_system->clockPeriod());
     return true;
 }
 
@@ -196,7 +199,8 @@ bool RubyPort::MemMasterPort::recvTimingResp(PacketPtr pkt)
             pkt->getAddr(), port->name());
 
     // attempt to send the response in the next cycle
-    port->schedTimingResp(pkt, curTick() + g_system_ptr->clockPeriod());
+    RubyPort *rp = static_cast<RubyPort *>(&owner);
+    port->schedTimingResp(pkt, curTick() + rp->m_ruby_system->clockPeriod());
 
     return true;
 }
@@ -229,28 +233,40 @@ RubyPort::MemSlavePort::recvTimingReq(PacketPtr pkt)
             pkt->getAddr(), id);
     RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
 
-    if (pkt->memInhibitAsserted())
-        panic("RubyPort should never see an inhibited request\n");
+    if (pkt->cacheResponding())
+        panic("RubyPort should never see request with the "
+              "cacheResponding flag set\n");
 
-    // Check for pio requests and directly send them to the dedicated
-    // pio port.
-    if (!isPhysMemAddress(pkt->getAddr())) {
-        assert(ruby_port->memMasterPort.isConnected());
-        DPRINTF(RubyPort, "Request address %#x assumed to be a pio address\n",
-                pkt->getAddr());
-
-        // Save the port in the sender state object to be used later to
-        // route the response
-        pkt->pushSenderState(new SenderState(this));
-
-        // send next cycle
-        ruby_port->memMasterPort.schedTimingReq(pkt,
-            curTick() + g_system_ptr->clockPeriod());
+    // ruby doesn't support cache maintenance operations at the
+    // moment, as a workaround, we respond right away
+    if (pkt->req->isCacheMaintenance()) {
+        warn_once("Cache maintenance operations are not supported in Ruby.\n");
+        pkt->makeResponse();
+        schedTimingResp(pkt, curTick());
         return true;
     }
+    // Check for pio requests and directly send them to the dedicated
+    // pio port.
+    if (pkt->cmd != MemCmd::MemFenceReq) {
+        if (!isPhysMemAddress(pkt->getAddr())) {
+            assert(ruby_port->memMasterPort.isConnected());
+            DPRINTF(RubyPort, "Request address %#x assumed to be a "
+                    "pio address\n", pkt->getAddr());
 
-    assert(Address(pkt->getAddr()).getOffset() + pkt->getSize() <=
-           RubySystem::getBlockSizeBytes());
+            // Save the port in the sender state object to be used later to
+            // route the response
+            pkt->pushSenderState(new SenderState(this));
+
+            // send next cycle
+            RubySystem *rs = ruby_port->m_ruby_system;
+            ruby_port->memMasterPort.schedTimingReq(pkt,
+                curTick() + rs->clockPeriod());
+            return true;
+        }
+
+        assert(getOffset(pkt->getAddr()) + pkt->getSize() <=
+               RubySystem::getBlockSizeBytes());
+    }
 
     // Submit the ruby request
     RequestStatus requestStatus = ruby_port->makeRequest(pkt);
@@ -268,18 +284,30 @@ RubyPort::MemSlavePort::recvTimingReq(PacketPtr pkt)
         return true;
     }
 
-    //
-    // Unless one is using the ruby tester, record the stalled M5 port for 
-    // later retry when the sequencer becomes free.
-    //
-    if (!ruby_port->m_usingRubyTester) {
-        ruby_port->addToRetryList(this);
+    if (pkt->cmd != MemCmd::MemFenceReq) {
+        DPRINTF(RubyPort,
+                "Request for address %#x did not issued because %s\n",
+                pkt->getAddr(), RequestStatus_to_string(requestStatus));
     }
 
-    DPRINTF(RubyPort, "Request for address %#x did not issued because %s\n",
-            pkt->getAddr(), RequestStatus_to_string(requestStatus));
+    addToRetryList();
 
     return false;
+}
+
+void
+RubyPort::MemSlavePort::addToRetryList()
+{
+    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
+
+    //
+    // Unless the requestor do not want retries (e.g., the Ruby tester),
+    // record the stalled M5 port for later retry when the sequencer
+    // becomes free.
+    //
+    if (!no_retry_on_stall && !ruby_port->onRetryList(this)) {
+        ruby_port->addToRetryList(this);
+    }
 }
 
 void
@@ -287,34 +315,36 @@ RubyPort::MemSlavePort::recvFunctional(PacketPtr pkt)
 {
     DPRINTF(RubyPort, "Functional access for address: %#x\n", pkt->getAddr());
 
+    RubyPort *rp M5_VAR_USED = static_cast<RubyPort *>(&owner);
+    RubySystem *rs = rp->m_ruby_system;
+
     // Check for pio requests and directly send them to the dedicated
     // pio port.
     if (!isPhysMemAddress(pkt->getAddr())) {
-        RubyPort *ruby_port M5_VAR_USED = static_cast<RubyPort *>(&owner);
-        assert(ruby_port->memMasterPort.isConnected());
         DPRINTF(RubyPort, "Pio Request for address: 0x%#x\n", pkt->getAddr());
-        panic("RubyPort::PioMasterPort::recvFunctional() not implemented!\n");
+        assert(rp->pioMasterPort.isConnected());
+        rp->pioMasterPort.sendFunctional(pkt);
+        return;
     }
 
     assert(pkt->getAddr() + pkt->getSize() <=
-                line_address(Address(pkt->getAddr())).getAddress() +
-                RubySystem::getBlockSizeBytes());
+           makeLineAddress(pkt->getAddr()) + RubySystem::getBlockSizeBytes());
 
     if (access_backing_store) {
         // The attached physmem contains the official version of data.
         // The following command performs the real functional access.
         // This line should be removed once Ruby supplies the official version
         // of data.
-        ruby_system->getPhysMem()->functionalAccess(pkt);
+        rs->getPhysMem()->functionalAccess(pkt);
     } else {
         bool accessSucceeded = false;
         bool needsResponse = pkt->needsResponse();
 
         // Do the functional access on ruby memory
         if (pkt->isRead()) {
-            accessSucceeded = ruby_system->functionalRead(pkt);
+            accessSucceeded = rs->functionalRead(pkt);
         } else if (pkt->isWrite()) {
-            accessSucceeded = ruby_system->functionalWrite(pkt);
+            accessSucceeded = rs->functionalWrite(pkt);
         } else {
             panic("Unsupported functional command %s\n", pkt->cmdString());
         }
@@ -356,76 +386,51 @@ RubyPort::ruby_hit_callback(PacketPtr pkt)
 
     port->hitCallback(pkt);
 
+    trySendRetries();
+}
+
+void
+RubyPort::trySendRetries()
+{
     //
     // If we had to stall the MemSlavePorts, wake them up because the sequencer
     // likely has free resources now.
     //
     if (!retryList.empty()) {
-        //
-        // Record the current list of ports to retry on a temporary list before
-        // calling sendRetry on those ports.  sendRetry will cause an 
-        // immediate retry, which may result in the ports being put back on the
-        // list. Therefore we want to clear the retryList before calling
-        // sendRetry.
-        //
+        // Record the current list of ports to retry on a temporary list
+        // before calling sendRetryReq on those ports. sendRetryReq will cause
+        // an immediate retry, which may result in the ports being put back on
+        // the list. Therefore we want to clear the retryList before calling
+        // sendRetryReq.
         std::vector<MemSlavePort *> curRetryList(retryList);
 
         retryList.clear();
 
         for (auto i = curRetryList.begin(); i != curRetryList.end(); ++i) {
             DPRINTF(RubyPort,
-                    "Sequencer may now be free.  SendRetry to port %s\n",
+                    "Sequencer may now be free. SendRetry to port %s\n",
                     (*i)->name());
             (*i)->sendRetryReq();
         }
     }
-
-    testDrainComplete();
 }
 
 void
 RubyPort::testDrainComplete()
 {
     //If we weren't able to drain before, we might be able to now.
-    if (drainManager != NULL) {
+    if (drainState() == DrainState::Draining) {
         unsigned int drainCount = outstandingCount();
         DPRINTF(Drain, "Drain count: %u\n", drainCount);
         if (drainCount == 0) {
             DPRINTF(Drain, "RubyPort done draining, signaling drain done\n");
-            drainManager->signalDrainDone();
-            // Clear the drain manager once we're done with it.
-            drainManager = NULL;
+            signalDrainDone();
         }
     }
 }
 
-unsigned int
-RubyPort::getChildDrainCount(DrainManager *dm)
-{
-    int count = 0;
-
-    if (memMasterPort.isConnected()) {
-        count += memMasterPort.drain(dm);
-        DPRINTF(Config, "count after pio check %d\n", count);
-    }
-
-    for (CpuPortIter p = slave_ports.begin(); p != slave_ports.end(); ++p) {
-        count += (*p)->drain(dm);
-        DPRINTF(Config, "count after slave port check %d\n", count);
-    }
-
-    for (std::vector<PioMasterPort *>::iterator p = master_ports.begin();
-         p != master_ports.end(); ++p) {
-        count += (*p)->drain(dm);
-        DPRINTF(Config, "count after master port check %d\n", count);
-    }
-
-    DPRINTF(Config, "final count %d\n", count);
-    return count;
-}
-
-unsigned int
-RubyPort::drain(DrainManager *dm)
+DrainState
+RubyPort::drain()
 {
     if (isDeadlockEventScheduled()) {
         descheduleDeadlockEvent();
@@ -433,29 +438,15 @@ RubyPort::drain(DrainManager *dm)
 
     //
     // If the RubyPort is not empty, then it needs to clear all outstanding
-    // requests before it should call drainManager->signalDrainDone()
+    // requests before it should call signalDrainDone()
     //
     DPRINTF(Config, "outstanding count %d\n", outstandingCount());
-    bool need_drain = outstandingCount() > 0;
-
-    //
-    // Also, get the number of child ports that will also need to clear
-    // their buffered requests before they call drainManager->signalDrainDone()
-    //
-    unsigned int child_drain_count = getChildDrainCount(dm);
-
-    // Set status
-    if (need_drain) {
-        drainManager = dm;
-
+    if (outstandingCount() > 0) {
         DPRINTF(Drain, "RubyPort not drained\n");
-        setDrainState(Drainable::Draining);
-        return child_drain_count + 1;
+        return DrainState::Draining;
+    } else {
+        return DrainState::Drained;
     }
-
-    drainManager = NULL;
-    setDrainState(Drainable::Drained);
-    return child_drain_count;
 }
 
 void
@@ -463,7 +454,7 @@ RubyPort::MemSlavePort::hitCallback(PacketPtr pkt)
 {
     bool needsResponse = pkt->needsResponse();
 
-    // Unless specified at configuraiton, all responses except failed SC 
+    // Unless specified at configuraiton, all responses except failed SC
     // and Flush operations access M5 physical memory.
     bool accessPhysMem = access_backing_store;
 
@@ -490,15 +481,22 @@ RubyPort::MemSlavePort::hitCallback(PacketPtr pkt)
         }
     }
 
-    // Flush requests don't access physical memory
-    if (pkt->isFlush()) {
+    // Flush, acquire, release requests don't access physical memory
+    if (pkt->isFlush() || pkt->cmd == MemCmd::MemFenceReq) {
         accessPhysMem = false;
+    }
+
+    if (pkt->req->isKernel()) {
+        accessPhysMem = false;
+        needsResponse = true;
     }
 
     DPRINTF(RubyPort, "Hit callback needs response %d\n", needsResponse);
 
+    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
+    RubySystem *rs = ruby_port->m_ruby_system;
     if (accessPhysMem) {
-        ruby_system->getPhysMem()->access(pkt);
+        rs->getPhysMem()->access(pkt);
     } else if (needsResponse) {
         pkt->makeResponse();
     }
@@ -506,8 +504,10 @@ RubyPort::MemSlavePort::hitCallback(PacketPtr pkt)
     // turn packet around to go back to requester if response expected
     if (needsResponse) {
         DPRINTF(RubyPort, "Sending packet back over port\n");
-        // send next cycle
-        schedTimingResp(pkt, curTick() + g_system_ptr->clockPeriod());
+        // Send a response in the same cycle. There is no need to delay the
+        // response because the response latency is already incurred in the
+        // Ruby protocol.
+        schedTimingResp(pkt, curTick());
     } else {
         delete pkt;
     }
@@ -539,17 +539,17 @@ RubyPort::MemSlavePort::isPhysMemAddress(Addr addr) const
 }
 
 void
-RubyPort::ruby_eviction_callback(const Address& address)
+RubyPort::ruby_eviction_callback(Addr address)
 {
     DPRINTF(RubyPort, "Sending invalidations.\n");
-    // This request is deleted in the stack-allocated packet destructor
-    // when this function exits
+    // Allocate the invalidate request and packet on the stack, as it is
+    // assumed they will not be modified or deleted by receivers.
     // TODO: should this really be using funcMasterId?
-    RequestPtr req =
-            new Request(address.getAddress(), 0, 0, Request::funcMasterId);
+    Request request(address, RubySystem::getBlockSizeBytes(), 0,
+                    Request::funcMasterId);
     // Use a single packet to signal all snooping ports of the invalidation.
     // This assumes that snooping ports do NOT modify the packet/request
-    Packet pkt(req, MemCmd::InvalidationReq);
+    Packet pkt(&request, MemCmd::InvalidateReq);
     for (CpuPortIter p = slave_ports.begin(); p != slave_ports.end(); ++p) {
         // check if the connected master port is snooping
         if ((*p)->isSnooping()) {

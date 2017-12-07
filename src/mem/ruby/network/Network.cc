@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2017 ARM Limited
+ * All rights reserved.
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 1999-2008 Mark D. Hill and David A. Wood
  * All rights reserved.
  *
@@ -26,10 +38,12 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "base/misc.hh"
-#include "mem/ruby/network/BasicLink.hh"
 #include "mem/ruby/network/Network.hh"
-#include "mem/ruby/system/System.hh"
+
+#include "base/logging.hh"
+#include "mem/ruby/common/MachineID.hh"
+#include "mem/ruby/network/BasicLink.hh"
+#include "mem/ruby/system/RubySystem.hh"
 
 uint32_t Network::m_virtual_networks;
 uint32_t Network::m_control_msg_size;
@@ -57,15 +71,14 @@ Network::Network(const Params *p)
     // Queues that are feeding the protocol
     m_fromNetQueues.resize(m_nodes);
 
-    m_in_use.resize(m_virtual_networks);
     m_ordered.resize(m_virtual_networks);
+    m_vnet_type_names.resize(m_virtual_networks);
 
     for (int i = 0; i < m_virtual_networks; i++) {
-        m_in_use[i] = false;
         m_ordered[i] = false;
     }
 
-    p->ruby_system->registerNetwork(this);
+    params()->ruby_system->registerNetwork(this);
 
     // Initialize the controller's network pointers
     for (std::vector<BasicExtLink*>::const_iterator i = p->ext_links.begin();
@@ -73,10 +86,23 @@ Network::Network(const Params *p)
         BasicExtLink *ext_link = (*i);
         AbstractController *abs_cntrl = ext_link->params()->ext_node;
         abs_cntrl->initNetworkPtr(this);
+        const AddrRangeList &ranges = abs_cntrl->getAddrRanges();
+        if (!ranges.empty()) {
+            MachineID mid = abs_cntrl->getMachineID();
+            AddrMapNode addr_map_node = {
+                .id = mid.getNum(),
+                .ranges = ranges
+            };
+            addrMap.emplace(mid.getType(), addr_map_node);
+        }
     }
 
     // Register a callback function for combining the statistics
     Stats::registerDumpCallback(new StatsCallback(this));
+
+    for (auto &it : dynamic_cast<Network *>(this)->params()->ext_links) {
+        it->params()->ext_node->initNetQueues();
+    }
 }
 
 Network::~Network()
@@ -129,4 +155,60 @@ Network::MessageSizeType_to_int(MessageSizeType size_type)
         panic("Invalid range for type MessageSizeType");
         break;
     }
+}
+
+void
+Network::checkNetworkAllocation(NodeID id, bool ordered,
+                                        int network_num,
+                                        std::string vnet_type)
+{
+    fatal_if(id >= m_nodes, "Node ID is out of range");
+    fatal_if(network_num >= m_virtual_networks, "Network id is out of range");
+
+    if (ordered) {
+        m_ordered[network_num] = true;
+    }
+
+    m_vnet_type_names[network_num] = vnet_type;
+}
+
+
+void
+Network::setToNetQueue(NodeID id, bool ordered, int network_num,
+                                 std::string vnet_type, MessageBuffer *b)
+{
+    checkNetworkAllocation(id, ordered, network_num, vnet_type);
+    while (m_toNetQueues[id].size() <= network_num) {
+        m_toNetQueues[id].push_back(nullptr);
+    }
+    m_toNetQueues[id][network_num] = b;
+}
+
+void
+Network::setFromNetQueue(NodeID id, bool ordered, int network_num,
+                                   std::string vnet_type, MessageBuffer *b)
+{
+    checkNetworkAllocation(id, ordered, network_num, vnet_type);
+    while (m_fromNetQueues[id].size() <= network_num) {
+        m_fromNetQueues[id].push_back(nullptr);
+    }
+    m_fromNetQueues[id][network_num] = b;
+}
+
+NodeID
+Network::addressToNodeID(Addr addr, MachineType mtype)
+{
+    // Look through the address maps for entries with matching machine
+    // type to get the responsible node for this address.
+    const auto &matching_ranges = addrMap.equal_range(mtype);
+    for (auto it = matching_ranges.first; it != matching_ranges.second; it++) {
+        AddrMapNode &node = it->second;
+        auto &ranges = node.ranges;
+        for (AddrRange &range: ranges) {
+            if (range.contains(addr)) {
+                return node.id;
+            }
+        }
+    }
+    return MachineType_base_count(mtype);
 }

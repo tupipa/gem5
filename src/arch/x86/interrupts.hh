@@ -92,26 +92,8 @@ class Interrupts : public BasicPioDevice, IntDevice
     /*
      * Timing related stuff.
      */
-    class ApicTimerEvent : public Event
-    {
-      private:
-        Interrupts *localApic;
-      public:
-        ApicTimerEvent(Interrupts *_localApic) :
-            Event(), localApic(_localApic)
-        {}
-
-        void process()
-        {
-            assert(localApic);
-            if (localApic->triggerTimerInterrupt()) {
-                localApic->setReg(APIC_INITIAL_COUNT,
-                        localApic->readReg(APIC_INITIAL_COUNT));
-            }
-        }
-    };
-
-    ApicTimerEvent apicTimerEvent;
+    EventFunctionWrapper apicTimerEvent;
+    void processApicTimerEvent();
 
     /*
      * A set of variables to keep track of interrupts that don't go through
@@ -212,15 +194,15 @@ class Interrupts : public BasicPioDevice, IntDevice
     /*
      * Initialize this object by registering it with the IO APIC.
      */
-    void init();
+    void init() override;
 
     /*
      * Functions to interact with the interrupt port from IntDevice.
      */
-    Tick read(PacketPtr pkt);
-    Tick write(PacketPtr pkt);
-    Tick recvMessage(PacketPtr pkt);
-    Tick recvResponse(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
+    Tick write(PacketPtr pkt) override;
+    Tick recvMessage(PacketPtr pkt) override;
+    Tick recvResponse(PacketPtr pkt) override;
 
     bool
     triggerTimerInterrupt()
@@ -231,10 +213,10 @@ class Interrupts : public BasicPioDevice, IntDevice
         return entry.periodic;
     }
 
-    AddrRangeList getIntAddrRange() const;
+    AddrRangeList getIntAddrRange() const override;
 
     BaseMasterPort &getMasterPort(const std::string &if_name,
-                                  PortID idx = InvalidPortID)
+                                  PortID idx = InvalidPortID) override
     {
         if (if_name == "int_master") {
             return intMasterPort;
@@ -243,7 +225,7 @@ class Interrupts : public BasicPioDevice, IntDevice
     }
 
     BaseSlavePort &getSlavePort(const std::string &if_name,
-                                PortID idx = InvalidPortID)
+                                PortID idx = InvalidPortID) override
     {
         if (if_name == "int_slave") {
             return intSlavePort;
@@ -293,9 +275,8 @@ class Interrupts : public BasicPioDevice, IntDevice
     /*
      * Serialization.
      */
-
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
     /*
      * Old functions needed for compatability but which will be phased out

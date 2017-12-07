@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 ARM Limited
+ * Copyright (c) 2012-2014, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -37,8 +37,9 @@
  * Authors: Andrew Bardsley
  */
 
-#include "arch/utility.hh"
 #include "cpu/minor/cpu.hh"
+
+#include "arch/utility.hh"
 #include "cpu/minor/dyn_inst.hh"
 #include "cpu/minor/fetch1.hh"
 #include "cpu/minor/pipeline.hh"
@@ -48,31 +49,31 @@
 
 MinorCPU::MinorCPU(MinorCPUParams *params) :
     BaseCPU(params),
-    drainManager(NULL)
+    threadPolicy(params->threadPolicy)
 {
     /* This is only written for one thread at the moment */
     Minor::MinorThread *thread;
 
-    if (FullSystem) {
-        thread = new Minor::MinorThread(this, 0, params->system, params->itb,
-            params->dtb, params->isa[0]);
-    } else {
-        /* thread_id 0 */
-        thread = new Minor::MinorThread(this, 0, params->system,
-            params->workload[0], params->itb, params->dtb, params->isa[0]);
+    for (ThreadID i = 0; i < numThreads; i++) {
+        if (FullSystem) {
+            thread = new Minor::MinorThread(this, i, params->system,
+                    params->itb, params->dtb, params->isa[i]);
+            thread->setStatus(ThreadContext::Halted);
+        } else {
+            thread = new Minor::MinorThread(this, i, params->system,
+                    params->workload[i], params->itb, params->dtb,
+                    params->isa[i]);
+        }
+
+        threads.push_back(thread);
+        ThreadContext *tc = thread->getTC();
+        threadContexts.push_back(tc);
     }
 
-    threads.push_back(thread);
-
-    thread->setStatus(ThreadContext::Halted);
-
-    ThreadContext *tc = thread->getTC();
 
     if (params->checker) {
         fatal("The Minor model doesn't support checking (yet)\n");
     }
-
-    threadContexts.push_back(tc);
 
     Minor::MinorDynInst::init();
 
@@ -130,33 +131,29 @@ MinorCPU::regStats()
 }
 
 void
-MinorCPU::serializeThread(std::ostream &os, ThreadID thread_id)
+MinorCPU::serializeThread(CheckpointOut &cp, ThreadID thread_id) const
 {
-    threads[thread_id]->serialize(os);
+    threads[thread_id]->serialize(cp);
 }
 
 void
-MinorCPU::unserializeThread(Checkpoint *cp, const std::string &section,
-    ThreadID thread_id)
+MinorCPU::unserializeThread(CheckpointIn &cp, ThreadID thread_id)
 {
-    if (thread_id != 0)
-        fatal("Trying to load more than one thread into a MinorCPU\n");
-
-    threads[thread_id]->unserialize(cp, section);
+    threads[thread_id]->unserialize(cp);
 }
 
 void
-MinorCPU::serialize(std::ostream &os)
+MinorCPU::serialize(CheckpointOut &cp) const
 {
-    pipeline->serialize(os);
-    BaseCPU::serialize(os);
+    pipeline->serialize(cp);
+    BaseCPU::serialize(cp);
 }
 
 void
-MinorCPU::unserialize(Checkpoint *cp, const std::string &section)
+MinorCPU::unserialize(CheckpointIn &cp)
 {
-    pipeline->unserialize(cp, section);
-    BaseCPU::unserialize(cp, section);
+    pipeline->unserialize(cp);
+    BaseCPU::unserialize(cp);
 }
 
 Addr
@@ -169,16 +166,14 @@ MinorCPU::dbg_vtophys(Addr addr)
 }
 
 void
-MinorCPU::wakeup()
+MinorCPU::wakeup(ThreadID tid)
 {
-    DPRINTF(Drain, "MinorCPU wakeup\n");
+    DPRINTF(Drain, "[tid:%d] MinorCPU wakeup\n", tid);
+    assert(tid < numThreads);
 
-    for (auto i = threads.begin(); i != threads.end(); i ++) {
-        if ((*i)->status() == ThreadContext::Suspended)
-            (*i)->activate();
+    if (threads[tid]->status() == ThreadContext::Suspended) {
+        threads[tid]->activate();
     }
-
-    DPRINTF(Drain,"Suspended Processor awoke\n");
 }
 
 void
@@ -191,43 +186,50 @@ MinorCPU::startup()
     for (auto i = threads.begin(); i != threads.end(); i ++)
         (*i)->startup();
 
-    /* CPU state setup, activate initial context */
-    activateContext(0);
+    for (ThreadID tid = 0; tid < numThreads; tid++) {
+        threads[tid]->startup();
+        pipeline->wakeupFetch(tid);
+    }
 }
 
-unsigned int
-MinorCPU::drain(DrainManager *drain_manager)
+DrainState
+MinorCPU::drain()
 {
-    DPRINTF(Drain, "MinorCPU drain\n");
+    // Deschedule any power gating event (if any)
+    deschedulePowerGatingEvent();
 
-    drainManager = drain_manager;
+    if (switchedOut()) {
+        DPRINTF(Drain, "Minor CPU switched out, draining not needed.\n");
+        return DrainState::Drained;
+    }
+
+    DPRINTF(Drain, "MinorCPU drain\n");
 
     /* Need to suspend all threads and wait for Execute to idle.
      * Tell Fetch1 not to fetch */
-    unsigned int ret = pipeline->drain(drain_manager);
-
-    if (ret == 0)
+    if (pipeline->drain()) {
         DPRINTF(Drain, "MinorCPU drained\n");
-    else
+        return DrainState::Drained;
+    } else {
         DPRINTF(Drain, "MinorCPU not finished draining\n");
-
-    return ret;
+        return DrainState::Draining;
+    }
 }
 
 void
 MinorCPU::signalDrainDone()
 {
     DPRINTF(Drain, "MinorCPU drain done\n");
-    setDrainState(Drainable::Drained);
-    drainManager->signalDrainDone();
-    drainManager = NULL;
+    Drainable::signalDrainDone();
 }
 
 void
 MinorCPU::drainResume()
 {
-    assert(getDrainState() == Drainable::Drained ||
-        getDrainState() == Drainable::Running);
+    /* When taking over from another cpu make sure lastStopped
+     * is reset since it might have not been defined previously
+     * and might lead to a stats corruption */
+    pipeline->resetLastStopped();
 
     if (switchedOut()) {
         DPRINTF(Drain, "drainResume while switched out.  Ignoring\n");
@@ -241,10 +243,14 @@ MinorCPU::drainResume()
             "'timing' mode.\n");
     }
 
-    wakeup();
+    for (ThreadID tid = 0; tid < numThreads; tid++){
+        wakeup(tid);
+    }
+
     pipeline->drainResume();
 
-    setDrainState(Drainable::Running);
+    // Reschedule any power gating event (if any)
+    schedulePowerGatingEvent();
 }
 
 void
@@ -271,14 +277,12 @@ MinorCPU::takeOverFrom(BaseCPU *old_cpu)
     DPRINTF(MinorCPU, "MinorCPU takeOverFrom\n");
 
     BaseCPU::takeOverFrom(old_cpu);
-
-    /* Don't think I need to do anything here */
 }
 
 void
 MinorCPU::activateContext(ThreadID thread_id)
 {
-    DPRINTF(MinorCPU, "ActivateContext thread: %d", thread_id);
+    DPRINTF(MinorCPU, "ActivateContext thread: %d\n", thread_id);
 
     /* Do some cycle accounting.  lastStopped is reset to stop the
      *  wakeup call on the pipeline from adding the quiesce period
@@ -289,7 +293,9 @@ MinorCPU::activateContext(ThreadID thread_id)
     /* Wake up the thread, wakeup the pipeline tick */
     threads[thread_id]->activate();
     wakeupOnEvent(Minor::Pipeline::CPUStageId);
-    pipeline->wakeupFetch();
+    pipeline->wakeupFetch(thread_id);
+
+    BaseCPU::activateContext(thread_id);
 }
 
 void
@@ -298,6 +304,8 @@ MinorCPU::suspendContext(ThreadID thread_id)
     DPRINTF(MinorCPU, "SuspendContext %d\n", thread_id);
 
     threads[thread_id]->suspend();
+
+    BaseCPU::suspendContext(thread_id);
 }
 
 void
@@ -313,9 +321,6 @@ MinorCPU::wakeupOnEvent(unsigned int stage_id)
 MinorCPU *
 MinorCPUParams::create()
 {
-    numThreads = 1;
-    if (!FullSystem && workload.size() != 1)
-        panic("only one workload allowed");
     return new MinorCPU(this);
 }
 

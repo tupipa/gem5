@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2012 ARM Limited
+ * Copyright (c) 2011-2012,2016-2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -45,18 +45,19 @@
  *          Rick Strong
  */
 
+#include "cpu/base.hh"
+
 #include <iostream>
 #include <sstream>
 #include <string>
 
 #include "arch/tlb.hh"
-#include "base/loader/symtab.hh"
 #include "base/cprintf.hh"
-#include "base/misc.hh"
+#include "base/loader/symtab.hh"
+#include "base/logging.hh"
 #include "base/output.hh"
 #include "base/trace.hh"
 #include "cpu/checker/cpu.hh"
-#include "cpu/base.hh"
 #include "cpu/cpuevent.hh"
 #include "cpu/profile.hh"
 #include "cpu/thread_context.hh"
@@ -64,6 +65,7 @@
 #include "debug/SyscallVerbose.hh"
 #include "mem/page_table.hh"
 #include "params/BaseCPU.hh"
+#include "sim/clocked_object.hh"
 #include "sim/full_system.hh"
 #include "sim/process.hh"
 #include "sim/sim_events.hh"
@@ -98,7 +100,7 @@ CPUProgressEvent::process()
     if (_repeatEvent)
       cpu->schedule(this, curTick() + _interval);
 
-    if(cpu->switchedOut()) {
+    if (cpu->switchedOut()) {
       return;
     }
 
@@ -127,13 +129,18 @@ BaseCPU::BaseCPU(Params *p, bool is_checker)
     : MemObject(p), instCnt(0), _cpuId(p->cpu_id), _socketId(p->socket_id),
       _instMasterId(p->system->getMasterId(name() + ".inst")),
       _dataMasterId(p->system->getMasterId(name() + ".data")),
-      _taskId(ContextSwitchTaskId::Unknown), _pid(Request::invldPid),
+      _taskId(ContextSwitchTaskId::Unknown), _pid(invldPid),
       _switchedOut(p->switched_out), _cacheLineSize(p->system->cacheLineSize()),
       interrupts(p->interrupts), profileEvent(NULL),
       numThreads(p->numThreads), system(p->system),
+      previousCycle(0), previousState(CPU_STATE_SLEEP),
       functionTraceStream(nullptr), currentFunctionStart(0),
       currentFunctionEnd(0), functionEntryTick(0),
-      addressMonitor()
+      addressMonitor(p->numThreads),
+      syscallRetryLatency(p->syscallRetryLatency),
+      pwrGatingLatency(p->pwr_gating_latency),
+      powerGatingOnIdle(p->power_gating_on_idle),
+      enterPwrGatingEvent([this]{ enterPwrGating(); }, name())
 {
     // if Python did not provide a valid ID, do it here
     if (_cpuId == -1 ) {
@@ -218,9 +225,7 @@ BaseCPU::BaseCPU(Params *p, bool is_checker)
     functionTracingEnabled = false;
     if (p->function_trace) {
         const string fname = csprintf("ftrace.%s", name());
-        functionTraceStream = simout.find(fname);
-        if (!functionTraceStream)
-            functionTraceStream = simout.create(fname);
+        functionTraceStream = simout.findOrCreate(fname)->stream();
 
         currentFunctionStart = currentFunctionEnd = 0;
         functionEntryTick = p->function_trace_start;
@@ -228,8 +233,8 @@ BaseCPU::BaseCPU(Params *p, bool is_checker)
         if (p->function_trace_start == 0) {
             functionTracingEnabled = true;
         } else {
-            typedef EventWrapper<BaseCPU, &BaseCPU::enableFunctionTrace> wrap;
-            Event *event = new wrap(this, true);
+            Event *event = new EventFunctionWrapper(
+                [this]{ enableFunctionTrace(); }, name(), true);
             schedule(event, p->function_trace_start);
         }
     }
@@ -237,17 +242,19 @@ BaseCPU::BaseCPU(Params *p, bool is_checker)
     // The interrupts should always be present unless this CPU is
     // switched in later or in case it is a checker CPU
     if (!params()->switched_out && !is_checker) {
-        if (interrupts) {
-            interrupts->setCPU(this);
-        } else {
-            fatal("CPU %s has no interrupt controller.\n"
-                  "Ensure createInterruptController() is called.\n", name());
-        }
+        fatal_if(interrupts.size() != numThreads,
+                 "CPU %s has %i interrupt controllers, but is expecting one "
+                 "per thread (%i)\n",
+                 name(), interrupts.size(), numThreads);
+        for (ThreadID tid = 0; tid < numThreads; tid++)
+            interrupts[tid]->setCPU(this);
     }
 
     if (FullSystem) {
         if (params()->profile)
-            profileEvent = new ProfileEvent(this, params()->profile);
+            profileEvent = new EventFunctionWrapper(
+                [this]{ processProfileEvent(); },
+                name());
     }
     tracer = params()->tracer;
 
@@ -271,39 +278,48 @@ BaseCPU::~BaseCPU()
 }
 
 void
-BaseCPU::armMonitor(Addr address)
+BaseCPU::armMonitor(ThreadID tid, Addr address)
 {
-    addressMonitor.armed = true;
-    addressMonitor.vAddr = address;
-    addressMonitor.pAddr = 0x0;
-    DPRINTF(Mwait,"Armed monitor (vAddr=0x%lx)\n", address);
+    assert(tid < numThreads);
+    AddressMonitor &monitor = addressMonitor[tid];
+
+    monitor.armed = true;
+    monitor.vAddr = address;
+    monitor.pAddr = 0x0;
+    DPRINTF(Mwait,"[tid:%d] Armed monitor (vAddr=0x%lx)\n", tid, address);
 }
 
 bool
-BaseCPU::mwait(PacketPtr pkt)
+BaseCPU::mwait(ThreadID tid, PacketPtr pkt)
 {
-    if(addressMonitor.gotWakeup == false) {
+    assert(tid < numThreads);
+    AddressMonitor &monitor = addressMonitor[tid];
+
+    if (!monitor.gotWakeup) {
         int block_size = cacheLineSize();
         uint64_t mask = ~((uint64_t)(block_size - 1));
 
         assert(pkt->req->hasPaddr());
-        addressMonitor.pAddr = pkt->getAddr() & mask;
-        addressMonitor.waiting = true;
+        monitor.pAddr = pkt->getAddr() & mask;
+        monitor.waiting = true;
 
-        DPRINTF(Mwait,"mwait called (vAddr=0x%lx, line's paddr=0x%lx)\n",
-                addressMonitor.vAddr, addressMonitor.pAddr);
+        DPRINTF(Mwait,"[tid:%d] mwait called (vAddr=0x%lx, "
+                "line's paddr=0x%lx)\n", tid, monitor.vAddr, monitor.pAddr);
         return true;
     } else {
-        addressMonitor.gotWakeup = false;
+        monitor.gotWakeup = false;
         return false;
     }
 }
 
 void
-BaseCPU::mwaitAtomic(ThreadContext *tc, TheISA::TLB *dtb)
+BaseCPU::mwaitAtomic(ThreadID tid, ThreadContext *tc, TheISA::TLB *dtb)
 {
+    assert(tid < numThreads);
+    AddressMonitor &monitor = addressMonitor[tid];
+
     Request req;
-    Addr addr = addressMonitor.vAddr;
+    Addr addr = monitor.vAddr;
     int block_size = cacheLineSize();
     uint64_t mask = ~((uint64_t)(block_size - 1));
     int size = block_size;
@@ -320,11 +336,11 @@ BaseCPU::mwaitAtomic(ThreadContext *tc, TheISA::TLB *dtb)
     Fault fault = dtb->translateAtomic(&req, tc, BaseTLB::Read);
     assert(fault == NoFault);
 
-    addressMonitor.pAddr = req.getPaddr() & mask;
-    addressMonitor.waiting = true;
+    monitor.pAddr = req.getPaddr() & mask;
+    monitor.waiting = true;
 
-    DPRINTF(Mwait,"mwait called (vAddr=0x%lx, line's paddr=0x%lx)\n",
-            addressMonitor.vAddr, addressMonitor.pAddr);
+    DPRINTF(Mwait,"[tid:%d] mwait called (vAddr=0x%lx, line's paddr=0x%lx)\n",
+            tid, monitor.vAddr, monitor.pAddr);
 }
 
 void
@@ -348,6 +364,14 @@ BaseCPU::startup()
     if (params()->progress_interval) {
         new CPUProgressEvent(this, params()->progress_interval);
     }
+
+    if (_switchedOut)
+        ClockedObject::pwrState(Enums::PwrState::OFF);
+
+    // Assumption CPU start to operate instantaneously without any latency
+    if (ClockedObject::pwrState() == Enums::PwrState::UNDEFINED)
+        ClockedObject::pwrState(Enums::PwrState::ON);
+
 }
 
 ProbePoints::PMUUPtr
@@ -362,12 +386,16 @@ BaseCPU::pmuProbePoint(const char *name)
 void
 BaseCPU::regProbePoints()
 {
-    ppCycles = pmuProbePoint("Cycles");
+    ppAllCycles = pmuProbePoint("Cycles");
+    ppActiveCycles = pmuProbePoint("ActiveCycles");
 
     ppRetiredInsts = pmuProbePoint("RetiredInsts");
     ppRetiredLoads = pmuProbePoint("RetiredLoads");
     ppRetiredStores = pmuProbePoint("RetiredStores");
     ppRetiredBranches = pmuProbePoint("RetiredBranches");
+
+    ppSleeping = new ProbePointArg<bool>(this->getProbeManager(),
+                                         "Sleeping");
 }
 
 void
@@ -390,6 +418,8 @@ BaseCPU::probeInstCommit(const StaticInstPtr &inst)
 void
 BaseCPU::regStats()
 {
+    MemObject::regStats();
+
     using namespace Stats;
 
     numCycles
@@ -436,27 +466,47 @@ BaseCPU::getMasterPort(const string &if_name, PortID idx)
 void
 BaseCPU::registerThreadContexts()
 {
+    assert(system->multiThread || numThreads == 1);
+
     ThreadID size = threadContexts.size();
     for (ThreadID tid = 0; tid < size; ++tid) {
         ThreadContext *tc = threadContexts[tid];
 
-        /** This is so that contextId and cpuId match where there is a
-         * 1cpu:1context relationship.  Otherwise, the order of registration
-         * could affect the assignment and cpu 1 could have context id 3, for
-         * example.  We may even want to do something like this for SMT so that
-         * cpu 0 has the lowest thread contexts and cpu N has the highest, but
-         * I'll just do this for now
-         */
-        if (numThreads == 1)
-            tc->setContextId(system->registerThreadContext(tc, _cpuId));
-        else
+        if (system->multiThread) {
             tc->setContextId(system->registerThreadContext(tc));
+        } else {
+            tc->setContextId(system->registerThreadContext(tc, _cpuId));
+        }
 
         if (!FullSystem)
             tc->getProcessPtr()->assignThreadContext(tc->contextId());
     }
 }
 
+void
+BaseCPU::deschedulePowerGatingEvent()
+{
+    if (enterPwrGatingEvent.scheduled()){
+        deschedule(enterPwrGatingEvent);
+    }
+}
+
+void
+BaseCPU::schedulePowerGatingEvent()
+{
+    for (auto tc : threadContexts) {
+        if (tc->status() == ThreadContext::Active)
+            return;
+    }
+
+    if (ClockedObject::pwrState() == Enums::PwrState::CLK_GATED &&
+        powerGatingOnIdle) {
+        assert(!enterPwrGatingEvent.scheduled());
+        // Schedule a power gating event when clock gated for the specified
+        // amount of time
+        schedule(enterPwrGatingEvent, clockEdge(pwrGatingLatency));
+    }
+}
 
 int
 BaseCPU::findContext(ThreadContext *tc)
@@ -470,6 +520,54 @@ BaseCPU::findContext(ThreadContext *tc)
 }
 
 void
+BaseCPU::activateContext(ThreadID thread_num)
+{
+    // Squash enter power gating event while cpu gets activated
+    if (enterPwrGatingEvent.scheduled())
+        deschedule(enterPwrGatingEvent);
+    // For any active thread running, update CPU power state to active (ON)
+    ClockedObject::pwrState(Enums::PwrState::ON);
+
+    updateCycleCounters(CPU_STATE_WAKEUP);
+}
+
+void
+BaseCPU::suspendContext(ThreadID thread_num)
+{
+    // Check if all threads are suspended
+    for (auto t : threadContexts) {
+        if (t->status() != ThreadContext::Suspended) {
+            return;
+        }
+    }
+
+    // All CPU thread are suspended, update cycle count
+    updateCycleCounters(CPU_STATE_SLEEP);
+
+    // All CPU threads suspended, enter lower power state for the CPU
+    ClockedObject::pwrState(Enums::PwrState::CLK_GATED);
+
+    // If pwrGatingLatency is set to 0 then this mechanism is disabled
+    if (powerGatingOnIdle) {
+        // Schedule power gating event when clock gated for pwrGatingLatency
+        // cycles
+        schedule(enterPwrGatingEvent, clockEdge(pwrGatingLatency));
+    }
+}
+
+void
+BaseCPU::haltContext(ThreadID thread_num)
+{
+    updateCycleCounters(BaseCPU::CPU_STATE_SLEEP);
+}
+
+void
+BaseCPU::enterPwrGating(void)
+{
+    ClockedObject::pwrState(Enums::PwrState::OFF);
+}
+
+void
 BaseCPU::switchOut()
 {
     assert(!_switchedOut);
@@ -480,6 +578,9 @@ BaseCPU::switchOut()
     // Flush all TLBs in the CPU to avoid having stale translations if
     // it gets switched in later.
     flushTLBs();
+
+    // Go to the power gating state
+    ClockedObject::pwrState(Enums::PwrState::OFF);
 }
 
 void
@@ -491,6 +592,12 @@ BaseCPU::takeOverFrom(BaseCPU *oldCPU)
     assert(oldCPU != this);
     _pid = oldCPU->getPid();
     _taskId = oldCPU->taskId();
+    // Take over the power state of the switchedOut CPU
+    ClockedObject::pwrState(oldCPU->pwrState());
+
+    previousState = oldCPU->previousState;
+    previousCycle = oldCPU->previousCycle;
+
     _switchedOut = false;
 
     ThreadID size = threadContexts.size();
@@ -578,8 +685,10 @@ BaseCPU::takeOverFrom(BaseCPU *oldCPU)
     }
 
     interrupts = oldCPU->interrupts;
-    interrupts->setCPU(this);
-    oldCPU->interrupts = NULL;
+    for (ThreadID tid = 0; tid < numThreads; tid++) {
+        interrupts[tid]->setCPU(this);
+    }
+    oldCPU->interrupts.clear();
 
     if (FullSystem) {
         for (ThreadID i = 0; i < size; ++i)
@@ -622,25 +731,19 @@ BaseCPU::flushTLBs()
     }
 }
 
-
-BaseCPU::ProfileEvent::ProfileEvent(BaseCPU *_cpu, Tick _interval)
-    : cpu(_cpu), interval(_interval)
-{ }
-
 void
-BaseCPU::ProfileEvent::process()
+BaseCPU::processProfileEvent()
 {
-    ThreadID size = cpu->threadContexts.size();
-    for (ThreadID i = 0; i < size; ++i) {
-        ThreadContext *tc = cpu->threadContexts[i];
-        tc->profileSample();
-    }
+    ThreadID size = threadContexts.size();
 
-    cpu->schedule(this, curTick() + interval);
+    for (ThreadID i = 0; i < size; ++i)
+        threadContexts[i]->profileSample();
+
+    schedule(profileEvent, curTick() + params()->profile);
 }
 
 void
-BaseCPU::serialize(std::ostream &os)
+BaseCPU::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(instCnt);
 
@@ -651,28 +754,29 @@ BaseCPU::serialize(std::ostream &os)
          * system. */
         SERIALIZE_SCALAR(_pid);
 
-        interrupts->serialize(os);
-
         // Serialize the threads, this is done by the CPU implementation.
         for (ThreadID i = 0; i < numThreads; ++i) {
-            nameOut(os, csprintf("%s.xc.%i", name(), i));
-            serializeThread(os, i);
+            ScopedCheckpointSection sec(cp, csprintf("xc.%i", i));
+            interrupts[i]->serialize(cp);
+            serializeThread(cp, i);
         }
     }
 }
 
 void
-BaseCPU::unserialize(Checkpoint *cp, const std::string &section)
+BaseCPU::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(instCnt);
 
     if (!_switchedOut) {
         UNSERIALIZE_SCALAR(_pid);
-        interrupts->unserialize(cp, section);
 
         // Unserialize the threads, this is done by the CPU implementation.
-        for (ThreadID i = 0; i < numThreads; ++i)
-            unserializeThread(cp, csprintf("%s.xc.%i", section, i), i);
+        for (ThreadID i = 0; i < numThreads; ++i) {
+            ScopedCheckpointSection sec(cp, csprintf("xc.%i", i));
+            interrupts[i]->unserialize(cp);
+            unserializeThread(cp, i);
+        }
     }
 }
 
@@ -685,6 +789,12 @@ BaseCPU::scheduleInstStop(ThreadID tid, Counter insts, const char *cause)
     comInstEventQueue[tid]->schedule(event, now + insts);
 }
 
+uint64_t
+BaseCPU::getCurrentInstCount(ThreadID tid)
+{
+    return Tick(comInstEventQueue[tid]->getCurTick());
+}
+
 AddressMonitor::AddressMonitor() {
     armed = false;
     waiting = false;
@@ -693,8 +803,8 @@ AddressMonitor::AddressMonitor() {
 
 bool AddressMonitor::doMonitor(PacketPtr pkt) {
     assert(pkt->req->hasPaddr());
-    if(armed && waiting) {
-        if(pAddr == pkt->getAddr()) {
+    if (armed && waiting) {
+        if (pAddr == pkt->getAddr()) {
             DPRINTF(Mwait,"pAddr=0x%lx invalidated: waking up core\n",
                     pkt->getAddr());
             waiting = false;
@@ -739,4 +849,10 @@ BaseCPU::traceFunctionsInternal(Addr pc)
                  curTick() - functionEntryTick, curTick(), sym_str);
         functionEntryTick = curTick();
     }
+}
+
+bool
+BaseCPU::waitForRemoteGDB() const
+{
+    return params()->wait_for_remote_gdb;
 }

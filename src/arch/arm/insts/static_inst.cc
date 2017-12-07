@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2014 ARM Limited
+ * Copyright (c) 2010-2014, 2016 ARM Limited
  * Copyright (c) 2013 Advanced Micro Devices, Inc.
  * All rights reserved
  *
@@ -42,10 +42,11 @@
  */
 
 #include "arch/arm/insts/static_inst.hh"
+
 #include "arch/arm/faults.hh"
-#include "base/loader/symtab.hh"
 #include "base/condcodes.hh"
 #include "base/cprintf.hh"
+#include "base/loader/symtab.hh"
 #include "cpu/reg_class.hh"
 
 namespace ArmISA
@@ -290,54 +291,62 @@ ArmStaticInst::shift_carry_rs(uint32_t base, uint32_t shamt,
     return 0;
 }
 
+void
+ArmStaticInst::printIntReg(std::ostream &os, RegIndex reg_idx) const
+{
+    if (aarch64) {
+        if (reg_idx == INTREG_UREG0)
+            ccprintf(os, "ureg0");
+        else if (reg_idx == INTREG_SPX)
+            ccprintf(os, "%s%s", (intWidth == 32) ? "w" : "", "sp");
+        else if (reg_idx == INTREG_X31)
+            ccprintf(os, "%szr", (intWidth == 32) ? "w" : "x");
+        else
+            ccprintf(os, "%s%d", (intWidth == 32) ? "w" : "x", reg_idx);
+    } else {
+        switch (reg_idx) {
+          case PCReg:
+            ccprintf(os, "pc");
+            break;
+          case StackPointerReg:
+            ccprintf(os, "sp");
+            break;
+          case FramePointerReg:
+             ccprintf(os, "fp");
+             break;
+          case ReturnAddressReg:
+             ccprintf(os, "lr");
+             break;
+          default:
+             ccprintf(os, "r%d", reg_idx);
+             break;
+        }
+    }
+}
 
 void
-ArmStaticInst::printReg(std::ostream &os, int reg) const
+ArmStaticInst::printFloatReg(std::ostream &os, RegIndex reg_idx) const
 {
-    RegIndex rel_reg;
+    ccprintf(os, "f%d", reg_idx);
+}
 
-    switch (regIdxToClass(reg, &rel_reg)) {
-      case IntRegClass:
-        if (aarch64) {
-            if (reg == INTREG_UREG0)
-                ccprintf(os, "ureg0");
-            else if (reg == INTREG_SPX)
-               ccprintf(os, "%s%s", (intWidth == 32) ? "w" : "", "sp");
-            else if (reg == INTREG_X31)
-                ccprintf(os, "%szr", (intWidth == 32) ? "w" : "x");
-            else
-                ccprintf(os, "%s%d", (intWidth == 32) ? "w" : "x", reg);
-        } else {
-            switch (rel_reg) {
-              case PCReg:
-                ccprintf(os, "pc");
-                break;
-              case StackPointerReg:
-                ccprintf(os, "sp");
-                break;
-              case FramePointerReg:
-                ccprintf(os, "fp");
-                break;
-              case ReturnAddressReg:
-                ccprintf(os, "lr");
-                break;
-              default:
-                ccprintf(os, "r%d", reg);
-                break;
-            }
-        }
-        break;
-      case FloatRegClass:
-        ccprintf(os, "f%d", rel_reg);
-        break;
-      case MiscRegClass:
-        assert(rel_reg < NUM_MISCREGS);
-        ccprintf(os, "%s", ArmISA::miscRegName[rel_reg]);
-        break;
-      case CCRegClass:
-        ccprintf(os, "cc_%s", ArmISA::ccRegName[rel_reg]);
-        break;
-    }
+void
+ArmStaticInst::printVecReg(std::ostream &os, RegIndex reg_idx) const
+{
+    ccprintf(os, "v%d", reg_idx);
+}
+
+void
+ArmStaticInst::printCCReg(std::ostream &os, RegIndex reg_idx) const
+{
+    ccprintf(os, "cc_%s", ArmISA::ccRegName[reg_idx]);
+}
+
+void
+ArmStaticInst::printMiscReg(std::ostream &os, RegIndex reg_idx) const
+{
+    assert(reg_idx < NUM_MISCREGS);
+    ccprintf(os, "%s", ArmISA::miscRegName[reg_idx]);
 }
 
 void
@@ -470,7 +479,7 @@ ArmStaticInst::printShiftOperand(std::ostream &os,
     bool firstOp = false;
 
     if (rm != INTREG_ZERO) {
-        printReg(os, rm);
+        printIntReg(os, rm);
     }
 
     bool done = false;
@@ -519,7 +528,7 @@ ArmStaticInst::printShiftOperand(std::ostream &os,
         if (immShift)
             os << "#" << shiftAmt;
         else
-            printReg(os, rs);
+            printIntReg(os, rs);
     }
 }
 
@@ -530,7 +539,7 @@ ArmStaticInst::printExtendOperand(bool firstOperand, std::ostream &os,
 {
     if (!firstOperand)
         ccprintf(os, ", ");
-    printReg(os, rm);
+    printIntReg(os, rm);
     if (type == UXTX && shiftAmt == 0)
         return;
     switch (type) {
@@ -559,7 +568,7 @@ void
 ArmStaticInst::printDataInst(std::ostream &os, bool withImm,
         bool immShift, bool s, IntRegIndex rd, IntRegIndex rn,
         IntRegIndex rm, IntRegIndex rs, uint32_t shiftAmt,
-        ArmShiftType type, uint32_t imm) const
+        ArmShiftType type, uint64_t imm) const
 {
     printMnemonic(os, s ? "s" : "");
     bool firstOp = true;
@@ -567,7 +576,7 @@ ArmStaticInst::printDataInst(std::ostream &os, bool withImm,
     // Destination
     if (rd != INTREG_ZERO) {
         firstOp = false;
-        printReg(os, rd);
+        printIntReg(os, rd);
     }
 
     // Source 1.
@@ -575,13 +584,13 @@ ArmStaticInst::printDataInst(std::ostream &os, bool withImm,
         if (!firstOp)
             os << ", ";
         firstOp = false;
-        printReg(os, rn);
+        printIntReg(os, rn);
     }
 
     if (!firstOp)
         os << ", ";
     if (withImm) {
-        ccprintf(os, "#%d", imm);
+        ccprintf(os, "#%ld", imm);
     } else {
         printShiftOperand(os, rm, immShift, shiftAmt, rs, type);
     }
@@ -595,4 +604,247 @@ ArmStaticInst::generateDisassembly(Addr pc,
     printMnemonic(ss);
     return ss.str();
 }
+
+
+Fault
+ArmStaticInst::advSIMDFPAccessTrap64(ExceptionLevel el) const
+{
+    switch (el) {
+      case EL1:
+        return std::make_shared<SupervisorTrap>(machInst, 0x1E00000,
+                                                EC_TRAPPED_SIMD_FP);
+      case EL2:
+        return std::make_shared<HypervisorTrap>(machInst, 0x1E00000,
+                                                EC_TRAPPED_SIMD_FP);
+      case EL3:
+        return std::make_shared<SecureMonitorTrap>(machInst, 0x1E00000,
+                                                   EC_TRAPPED_SIMD_FP);
+
+      default:
+        panic("Illegal EL in advSIMDFPAccessTrap64\n");
+    }
+}
+
+
+Fault
+ArmStaticInst::checkFPAdvSIMDTrap64(ThreadContext *tc, CPSR cpsr) const
+{
+    const ExceptionLevel el = (ExceptionLevel) (uint8_t)cpsr.el;
+
+    if (ArmSystem::haveVirtualization(tc) && el <= EL2) {
+        HCPTR cptrEnCheck = tc->readMiscReg(MISCREG_CPTR_EL2);
+        if (cptrEnCheck.tfp)
+            return advSIMDFPAccessTrap64(EL2);
+    }
+
+    if (ArmSystem::haveSecurity(tc)) {
+        HCPTR cptrEnCheck = tc->readMiscReg(MISCREG_CPTR_EL3);
+        if (cptrEnCheck.tfp)
+            return advSIMDFPAccessTrap64(EL3);
+    }
+
+    return NoFault;
+}
+
+Fault
+ArmStaticInst::checkFPAdvSIMDEnabled64(ThreadContext *tc,
+                                       CPSR cpsr, CPACR cpacr) const
+{
+    const ExceptionLevel el = (ExceptionLevel) (uint8_t)cpsr.el;
+    if ((el == EL0 && cpacr.fpen != 0x3) ||
+        (el == EL1 && !(cpacr.fpen & 0x1)))
+        return advSIMDFPAccessTrap64(EL1);
+
+    return checkFPAdvSIMDTrap64(tc, cpsr);
+}
+
+Fault
+ArmStaticInst::checkAdvSIMDOrFPEnabled32(ThreadContext *tc,
+                                         CPSR cpsr, CPACR cpacr,
+                                         NSACR nsacr, FPEXC fpexc,
+                                         bool fpexc_check, bool advsimd) const
+{
+    const bool have_virtualization = ArmSystem::haveVirtualization(tc);
+    const bool have_security = ArmSystem::haveSecurity(tc);
+    const bool is_secure = inSecureState(tc);
+    const ExceptionLevel cur_el = opModeToEL(currOpMode(tc));
+
+    if (cur_el == EL0 && ELIs64(tc, EL1))
+        return checkFPAdvSIMDEnabled64(tc, cpsr, cpacr);
+
+    uint8_t cpacr_cp10 = cpacr.cp10;
+    bool cpacr_asedis = cpacr.asedis;
+
+    if (have_security && !ELIs64(tc, EL3) && !is_secure) {
+        if (nsacr.nsasedis)
+            cpacr_asedis = true;
+        if (nsacr.cp10 == 0)
+            cpacr_cp10 = 0;
+    }
+
+    if (cur_el != EL2) {
+        if (advsimd && cpacr_asedis)
+            return disabledFault();
+
+        if ((cur_el == EL0 && cpacr_cp10 != 0x3) ||
+            (cur_el != EL0 && !(cpacr_cp10 & 0x1)))
+            return disabledFault();
+    }
+
+    if (fpexc_check && !fpexc.en)
+        return disabledFault();
+
+    // -- aarch32/exceptions/traps/AArch32.CheckFPAdvSIMDTrap --
+
+    if (have_virtualization && !is_secure && ELIs64(tc, EL2))
+        return checkFPAdvSIMDTrap64(tc, cpsr);
+
+    if (have_virtualization && !is_secure) {
+        HCPTR hcptr = tc->readMiscReg(MISCREG_HCPTR);
+        bool hcptr_cp10 = hcptr.tcp10;
+        bool hcptr_tase = hcptr.tase;
+
+        if (have_security && !ELIs64(tc, EL3) && !is_secure) {
+            if (nsacr.nsasedis)
+                hcptr_tase = true;
+            if (nsacr.cp10)
+                hcptr_cp10 = true;
+        }
+
+        if ((advsimd && hcptr_tase) || hcptr_cp10) {
+            const uint32_t iss = advsimd ? (1 << 5) : 0xA;
+            if (cur_el == EL2) {
+                return std::make_shared<UndefinedInstruction>(
+                    machInst, iss,
+                    EC_TRAPPED_HCPTR, mnemonic);
+            } else {
+                return std::make_shared<HypervisorTrap>(
+                    machInst, iss,
+                    EC_TRAPPED_HCPTR);
+            }
+
+        }
+    }
+
+    if (have_security && ELIs64(tc, EL3)) {
+        HCPTR cptrEnCheck = tc->readMiscReg(MISCREG_CPTR_EL3);
+        if (cptrEnCheck.tfp)
+            return advSIMDFPAccessTrap64(EL3);
+    }
+
+    return NoFault;
+}
+
+
+static uint8_t
+getRestoredITBits(ThreadContext *tc, CPSR spsr)
+{
+    // See: shared/functions/system/RestoredITBits in the ARM ARM
+
+    const ExceptionLevel el = opModeToEL((OperatingMode) (uint8_t)spsr.mode);
+    const uint8_t it = itState(spsr);
+
+    if (!spsr.t || spsr.il)
+        return 0;
+
+    // The IT bits are forced to zero when they are set to a reserved
+    // value.
+    if (bits(it, 7, 4) != 0 && bits(it, 3, 0) == 0)
+        return 0;
+
+    const bool itd = el == EL2 ?
+        ((SCTLR)tc->readMiscReg(MISCREG_HSCTLR)).itd :
+        ((SCTLR)tc->readMiscReg(MISCREG_SCTLR)).itd;
+
+    // The IT bits are forced to zero when returning to A32 state, or
+    // when returning to an EL with the ITD bit set to 1, and the IT
+    // bits are describing a multi-instruction block.
+    if (itd && bits(it, 2, 0) != 0)
+        return 0;
+
+    return it;
+}
+
+static bool
+illegalExceptionReturn(ThreadContext *tc, CPSR cpsr, CPSR spsr)
+{
+    const OperatingMode mode = (OperatingMode) (uint8_t)spsr.mode;
+    if (badMode(mode))
+        return true;
+
+    const OperatingMode cur_mode = (OperatingMode) (uint8_t)cpsr.mode;
+    const ExceptionLevel target_el = opModeToEL(mode);
+    if (target_el > opModeToEL(cur_mode))
+        return true;
+
+    if (target_el == EL3 && !ArmSystem::haveSecurity(tc))
+        return true;
+
+    if (target_el == EL2 && !ArmSystem::haveVirtualization(tc))
+        return true;
+
+    if (!spsr.width) {
+        // aarch64
+        if (!ArmSystem::highestELIs64(tc))
+            return true;
+
+        if (spsr & 0x2)
+            return true;
+        if (target_el == EL0 && spsr.sp)
+            return true;
+        if (target_el == EL2 && !((SCR)tc->readMiscReg(MISCREG_SCR_EL3)).ns)
+            return false;
+    } else {
+        return badMode32(mode);
+    }
+
+    return false;
+}
+
+CPSR
+ArmStaticInst::getPSTATEFromPSR(ThreadContext *tc, CPSR cpsr, CPSR spsr) const
+{
+    CPSR new_cpsr = 0;
+
+    // gem5 doesn't implement single-stepping, so force the SS bit to
+    // 0.
+    new_cpsr.ss = 0;
+
+    if (illegalExceptionReturn(tc, cpsr, spsr)) {
+        new_cpsr.il = 1;
+    } else {
+        new_cpsr.il = spsr.il;
+        if (spsr.width && badMode32((OperatingMode)(uint8_t)spsr.mode)) {
+            new_cpsr.il = 1;
+        } else if (spsr.width) {
+            new_cpsr.mode = spsr.mode;
+        } else {
+            new_cpsr.el = spsr.el;
+            new_cpsr.sp = spsr.sp;
+        }
+    }
+
+    new_cpsr.nz = spsr.nz;
+    new_cpsr.c = spsr.c;
+    new_cpsr.v = spsr.v;
+    if (new_cpsr.width) {
+        // aarch32
+        const ITSTATE it = getRestoredITBits(tc, spsr);
+        new_cpsr.q = spsr.q;
+        new_cpsr.ge = spsr.ge;
+        new_cpsr.e = spsr.e;
+        new_cpsr.aif = spsr.aif;
+        new_cpsr.t = spsr.t;
+        new_cpsr.it2 = it.top6;
+        new_cpsr.it1 = it.bottom2;
+    } else {
+        // aarch64
+        new_cpsr.daif = spsr.daif;
+    }
+
+    return new_cpsr;
+}
+
+
+
 }

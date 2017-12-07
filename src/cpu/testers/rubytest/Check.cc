@@ -27,17 +27,17 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "base/random.hh"
 #include "cpu/testers/rubytest/Check.hh"
+
+#include "base/random.hh"
+#include "base/trace.hh"
 #include "debug/RubyTest.hh"
 #include "mem/ruby/common/SubBlock.hh"
-#include "mem/ruby/system/Sequencer.hh"
-#include "mem/ruby/system/System.hh"
 
 typedef RubyTester::SenderState SenderState;
 
-Check::Check(const Address& address, const Address& pc,
-             int _num_writers, int _num_readers, RubyTester* _tester)
+Check::Check(Addr address, Addr pc, int _num_writers, int _num_readers,
+             RubyTester* _tester)
     : m_num_writers(_num_writers), m_num_readers(_num_readers),
       m_tester_ptr(_tester)
 {
@@ -96,7 +96,9 @@ Check::initiatePrefetch()
         cmd = MemCmd::ReadReq;
 
         // if necessary, make the request an instruction fetch
-        if (m_tester_ptr->isInstReadableCpuPort(index)) {
+        if (m_tester_ptr->isInstOnlyCpuPort(index) ||
+            (m_tester_ptr->isInstDataCpuPort(index) &&
+             (random_mt.random(0, 0x1)))) {
             flags.set(Request::INST_FETCH);
         }
     } else {
@@ -105,9 +107,9 @@ Check::initiatePrefetch()
     }
 
     // Prefetches are assumed to be 0 sized
-    Request *req = new Request(m_address.getAddress(), 0, flags,
-            m_tester_ptr->masterId(), curTick(), m_pc.getAddress());
-    req->setThreadContext(index, 0);
+    Request *req = new Request(m_address, 0, flags,
+            m_tester_ptr->masterId(), curTick(), m_pc);
+    req->setContext(index);
 
     PacketPtr pkt = new Packet(req, cmd);
     // despite the oddity of the 0 size (questionable if this should
@@ -144,8 +146,8 @@ Check::initiateFlush()
 
     Request::Flags flags;
 
-    Request *req = new Request(m_address.getAddress(), CHECK_SIZE, flags,
-            m_tester_ptr->masterId(), curTick(), m_pc.getAddress());
+    Request *req = new Request(m_address, CHECK_SIZE, flags,
+            m_tester_ptr->masterId(), curTick(), m_pc);
 
     Packet::Command cmd;
 
@@ -174,14 +176,13 @@ Check::initiateAction()
     Request::Flags flags;
 
     // Create the particular address for the next byte to be written
-    Address writeAddr(m_address.getAddress() + m_store_count);
+    Addr writeAddr(m_address + m_store_count);
 
     // Stores are assumed to be 1 byte-sized
-    Request *req = new Request(writeAddr.getAddress(), 1, flags,
-            m_tester_ptr->masterId(), curTick(),
-                               m_pc.getAddress());
+    Request *req = new Request(writeAddr, 1, flags, m_tester_ptr->masterId(),
+                               curTick(), m_pc);
 
-    req->setThreadContext(index, 0);
+    req->setContext(index);
     Packet::Command cmd;
 
     // 1 out of 8 chance, issue an atomic rather than a write
@@ -196,7 +197,7 @@ Check::initiateAction()
     *writeData = m_value + m_store_count;
     pkt->dataDynamic(writeData);
 
-    DPRINTF(RubyTest, "data 0x%x check 0x%x\n",
+    DPRINTF(RubyTest, "Seq write: index %d data 0x%x check 0x%x\n", index,
             *(pkt->getConstPtr<uint8_t>()), *writeData);
 
     // push the subblock onto the sender state.  The sequencer will
@@ -208,6 +209,7 @@ Check::initiateAction()
         DPRINTF(RubyTest, "status before action update: %s\n",
                 (TesterStatus_to_string(m_status)).c_str());
         m_status = TesterStatus_Action_Pending;
+        DPRINTF(RubyTest, "Check %s, State=Action_Pending\n", m_address);
     } else {
         // If the packet did not issue, must delete
         // Note: No need to delete the data, the packet destructor
@@ -235,18 +237,22 @@ Check::initiateCheck()
     Request::Flags flags;
 
     // If necessary, make the request an instruction fetch
-    if (m_tester_ptr->isInstReadableCpuPort(index)) {
+    if (m_tester_ptr->isInstOnlyCpuPort(index) ||
+        (m_tester_ptr->isInstDataCpuPort(index) &&
+         (random_mt.random(0, 0x1)))) {
         flags.set(Request::INST_FETCH);
     }
 
     // Checks are sized depending on the number of bytes written
-    Request *req = new Request(m_address.getAddress(), CHECK_SIZE, flags,
-                               m_tester_ptr->masterId(), curTick(), m_pc.getAddress());
+    Request *req = new Request(m_address, CHECK_SIZE, flags,
+                               m_tester_ptr->masterId(), curTick(), m_pc);
 
-    req->setThreadContext(index, 0);
+    req->setContext(index);
     PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
     uint8_t *dataArray = new uint8_t[CHECK_SIZE];
     pkt->dataDynamic(dataArray);
+
+    DPRINTF(RubyTest, "Seq read: index %d\n", index);
 
     // push the subblock onto the sender state.  The sequencer will
     // update the subblock on the return
@@ -257,6 +263,7 @@ Check::initiateCheck()
         DPRINTF(RubyTest, "status before check update: %s\n",
                 TesterStatus_to_string(m_status).c_str());
         m_status = TesterStatus_Check_Pending;
+        DPRINTF(RubyTest, "Check %s, State=Check_Pending\n", m_address);
     } else {
         // If the packet did not issue, must delete
         // Note: No need to delete the data, the packet destructor
@@ -275,12 +282,12 @@ Check::initiateCheck()
 void
 Check::performCallback(NodeID proc, SubBlock* data, Cycles curTime)
 {
-    Address address = data->getAddress();
+    Addr address = data->getAddress();
 
     // This isn't exactly right since we now have multi-byte checks
     //  assert(getAddress() == address);
 
-    assert(getAddress().getLineAddress() == address.getLineAddress());
+    assert(makeLineAddress(m_address) == makeLineAddress(address));
     assert(data != NULL);
 
     DPRINTF(RubyTest, "RubyTester Callback\n");
@@ -294,8 +301,11 @@ Check::performCallback(NodeID proc, SubBlock* data, Cycles curTime)
         m_store_count++;
         if (m_store_count == CHECK_SIZE) {
             m_status = TesterStatus_Ready;
+            DPRINTF(RubyTest, "Check %s, State=Ready\n", m_address);
         } else {
             m_status = TesterStatus_Idle;
+            DPRINTF(RubyTest, "Check %s, State=Idle store_count: %d\n",
+                    m_address, m_store_count);
         }
         DPRINTF(RubyTest, "Action callback return data now %d\n",
                 data->getByte(0));
@@ -319,6 +329,7 @@ Check::performCallback(NodeID proc, SubBlock* data, Cycles curTime)
         m_tester_ptr->incrementCheckCompletions();
 
         m_status = TesterStatus_Idle;
+        DPRINTF(RubyTest, "Check %s, State=Idle\n", m_address);
         pickValue();
 
     } else {
@@ -327,17 +338,18 @@ Check::performCallback(NodeID proc, SubBlock* data, Cycles curTime)
     }
 
     DPRINTF(RubyTest, "proc: %d, Address: 0x%x\n", proc,
-            getAddress().getLineAddress());
+            makeLineAddress(m_address));
     DPRINTF(RubyTest, "Callback done\n");
     debugPrint();
 }
 
 void
-Check::changeAddress(const Address& address)
+Check::changeAddress(Addr address)
 {
     assert(m_status == TesterStatus_Idle || m_status == TesterStatus_Ready);
     m_status = TesterStatus_Idle;
     m_address = address;
+    DPRINTF(RubyTest, "Check %s, State=Idle\n", m_address);
     m_store_count = 0;
 }
 
@@ -345,7 +357,6 @@ void
 Check::pickValue()
 {
     assert(m_status == TesterStatus_Idle);
-    m_status = TesterStatus_Idle;
     m_value = random_mt.random(0, 0xff); // One byte
     m_store_count = 0;
 }
@@ -356,7 +367,8 @@ Check::pickInitiatingNode()
     assert(m_status == TesterStatus_Idle || m_status == TesterStatus_Ready);
     m_status = TesterStatus_Idle;
     m_initiatingNode = (random_mt.random(0, m_num_writers - 1));
-    DPRINTF(RubyTest, "picked initiating node %d\n", m_initiatingNode);
+    DPRINTF(RubyTest, "Check %s, State=Idle, picked initiating node %d\n",
+            m_address, m_initiatingNode);
     m_store_count = 0;
 }
 
@@ -377,7 +389,6 @@ Check::debugPrint()
 {
     DPRINTF(RubyTest,
         "[%#x, value: %d, status: %s, initiating node: %d, store_count: %d]\n",
-        m_address.getAddress(), (int)m_value,
-        TesterStatus_to_string(m_status).c_str(),
+        m_address, (int)m_value, TesterStatus_to_string(m_status).c_str(),
         m_initiatingNode, m_store_count);
 }

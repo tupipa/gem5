@@ -1,6 +1,6 @@
 
 /*
- * Copyright (c) 2010-2014 ARM Limited
+ * Copyright (c) 2010-2014, 2017 ARM Limited
  * Copyright (c) 2013 Advanced Micro Devices, Inc.
  * All rights reserved
  *
@@ -116,6 +116,9 @@ LSQUnit<Impl>::completeDataAccess(PacketPtr pkt)
     assert(!cpu->switchedOut());
     if (!inst->isSquashed()) {
         if (!state->noWB) {
+            // Only loads and store conditionals perform the writeback
+            // after receving the response from the memory
+            assert(inst->isLoad() || inst->isStoreConditional());
             if (!TheISA::HasUnalignedMemAcc || !state->isSplit ||
                 !state->isLoad) {
                 writeback(inst, pkt);
@@ -143,7 +146,8 @@ LSQUnit<Impl>::completeDataAccess(PacketPtr pkt)
 template <class Impl>
 LSQUnit<Impl>::LSQUnit()
     : loads(0), stores(0), storesToWB(0), cacheBlockMask(0), stalled(false),
-      isStoreBlocked(false), storeInFlight(false), hasPendingPkt(false)
+      isStoreBlocked(false), storeInFlight(false), hasPendingPkt(false),
+      pendingPkt(nullptr)
 {
 }
 
@@ -175,7 +179,7 @@ LSQUnit<Impl>::init(O3CPU *cpu_ptr, IEW *iew_ptr, DerivO3CPUParams *params,
 
     depCheckShift = params->LSQDepCheckShift;
     checkLoads = params->LSQCheckLoads;
-    cachePorts = params->cachePorts;
+    cacheStorePorts = params->cacheStorePorts;
     needsTSO = params->needsTSO;
 
     resetState();
@@ -192,7 +196,7 @@ LSQUnit<Impl>::resetState()
 
     storeHead = storeWBIdx = storeTail = 0;
 
-    usedPorts = 0;
+    usedStorePorts = 0;
 
     retryPkt = NULL;
     memDepViolator = NULL;
@@ -434,13 +438,14 @@ template <class Impl>
 void
 LSQUnit<Impl>::checkSnoop(PacketPtr pkt)
 {
+    // Should only ever get invalidations in here
+    assert(pkt->isInvalidate());
+
     int load_idx = loadHead;
     DPRINTF(LSQUnit, "Got snoop for address %#x\n", pkt->getAddr());
 
-    // Unlock the cpu-local monitor when the CPU sees a snoop to a locked
-    // address. The CPU can speculatively execute a LL operation after a pending
-    // SC operation in the pipeline and that can make the cache monitor the CPU
-    // is connected to valid while it really shouldn't be.
+    // Only Invalidate packet calls checkSnoop
+    assert(pkt->isInvalidate());
     for (int x = 0; x < cpu->numContexts(); x++) {
         ThreadContext *tc = cpu->getContext(x);
         bool no_squash = cpu->thread[x]->noSquashFromTC;
@@ -453,10 +458,13 @@ LSQUnit<Impl>::checkSnoop(PacketPtr pkt)
 
     DynInstPtr ld_inst = loadQueue[load_idx];
     if (ld_inst) {
-        Addr load_addr = ld_inst->physEffAddr & cacheBlockMask;
+        Addr load_addr_low = ld_inst->physEffAddrLow & cacheBlockMask;
+        Addr load_addr_high = ld_inst->physEffAddrHigh & cacheBlockMask;
+
         // Check that this snoop didn't just invalidate our lock flag
-        if (ld_inst->effAddrValid() && load_addr == invalidate_addr &&
-            ld_inst->memReqFlags & Request::LLSC)
+        if (ld_inst->effAddrValid() && (load_addr_low == invalidate_addr
+                                        || load_addr_high == invalidate_addr)
+            && ld_inst->memReqFlags & Request::LLSC)
             TheISA::handleLockedSnoopHit(ld_inst.get());
     }
 
@@ -476,11 +484,14 @@ LSQUnit<Impl>::checkSnoop(PacketPtr pkt)
             continue;
         }
 
-        Addr load_addr = ld_inst->physEffAddr & cacheBlockMask;
-        DPRINTF(LSQUnit, "-- inst [sn:%lli] load_addr: %#x to pktAddr:%#x\n",
-                    ld_inst->seqNum, load_addr, invalidate_addr);
+        Addr load_addr_low = ld_inst->physEffAddrLow & cacheBlockMask;
+        Addr load_addr_high = ld_inst->physEffAddrHigh & cacheBlockMask;
 
-        if (load_addr == invalidate_addr || force_squash) {
+        DPRINTF(LSQUnit, "-- inst [sn:%lli] load_addr: %#x to pktAddr:%#x\n",
+                    ld_inst->seqNum, load_addr_low, invalidate_addr);
+
+        if ((load_addr_low == invalidate_addr
+             || load_addr_high == invalidate_addr) || force_squash) {
             if (needsTSO) {
                 // If we have a TSO system, as all loads must be ordered with
                 // all other loads, this load as well as *all* subsequent loads
@@ -668,17 +679,17 @@ LSQUnit<Impl>::executeStore(DynInstPtr &store_inst)
         store_fault == NoFault)
         return store_fault;
 
-    if (!store_inst->readPredicate())
+    if (!store_inst->readPredicate()) {
+        DPRINTF(LSQUnit, "Store [sn:%lli] not executed from predication\n",
+                store_inst->seqNum);
         store_inst->forwardOldRegs();
+        return store_fault;
+    }
 
     if (storeQueue[store_idx].size == 0) {
         DPRINTF(LSQUnit,"Fault on Store PC %s, [sn:%lli], Size = 0\n",
                 store_inst->pcState(), store_inst->seqNum);
 
-        return store_fault;
-    } else if (!store_inst->readPredicate()) {
-        DPRINTF(LSQUnit, "Store [sn:%lli] not executed from predication\n",
-                store_inst->seqNum);
         return store_fault;
     }
 
@@ -784,7 +795,7 @@ LSQUnit<Impl>::writebackStores()
            storeQueue[storeWBIdx].inst &&
            storeQueue[storeWBIdx].canWB &&
            ((!needsTSO) || (!storeInFlight)) &&
-           usedPorts < cachePorts) {
+           usedStorePorts < cacheStorePorts) {
 
         if (isStoreBlocked) {
             DPRINTF(LSQUnit, "Unable to write back any more stores, cache"
@@ -802,7 +813,7 @@ LSQUnit<Impl>::writebackStores()
             continue;
         }
 
-        ++usedPorts;
+        ++usedStorePorts;
 
         if (storeQueue[storeWBIdx].inst->isDataPrefetch()) {
             incrStIdx(storeWBIdx);
@@ -890,12 +901,6 @@ LSQUnit<Impl>::writebackStores()
                         inst->seqNum);
                 WritebackEvent *wb = new WritebackEvent(inst, data_pkt, this);
                 cpu->schedule(wb, curTick() + 1);
-                if (cpu->checker) {
-                    // Make sure to set the LLSC data for verification
-                    // if checker is loaded
-                    inst->reqToVerify->setExtraData(0);
-                    inst->completeAcc(data_pkt);
-                }
                 completeStore(storeWBIdx);
                 incrStIdx(storeWBIdx);
                 continue;
@@ -942,8 +947,8 @@ LSQUnit<Impl>::writebackStores()
                 assert(snd_data_pkt);
 
                 // Ensure there are enough ports to use.
-                if (usedPorts < cachePorts) {
-                    ++usedPorts;
+                if (usedStorePorts < cacheStorePorts) {
+                    ++usedStorePorts;
                     if (sendStore(snd_data_pkt)) {
                         storePostSend(snd_data_pkt);
                     } else {
@@ -967,7 +972,7 @@ LSQUnit<Impl>::writebackStores()
     }
 
     // Not sure this should set it to 0.
-    usedPorts = 0;
+    usedStorePorts = 0;
 
     assert(stores >= 0 && storesToWB >= 0);
 }
@@ -1203,7 +1208,11 @@ LSQUnit<Impl>::completeStore(int store_idx)
     // Tell the checker we've completed this instruction.  Some stores
     // may get reported twice to the checker, but the checker can
     // handle that case.
-    if (cpu->checker) {
+
+    // Store conditionals cannot be sent to the checker yet, they have
+    // to update the misc registers first which should take place
+    // when they commit
+    if (cpu->checker && !storeQueue[store_idx].inst->isStoreConditional()) {
         cpu->checker->verify(storeQueue[store_idx].inst);
     }
 }

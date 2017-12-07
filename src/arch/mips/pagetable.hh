@@ -34,7 +34,7 @@
 #ifndef __ARCH_MIPS_PAGETABLE_H__
 #define __ARCH_MIPS_PAGETABLE_H__
 
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/types.hh"
 #include "sim/serialize.hh"
 
@@ -65,7 +65,7 @@ struct PTE
     bool V1;    // Odd entry Valid Bit
     uint8_t C1; // Cache Coherency Bits (3 bits)
 
-    /* 
+    /*
      * The next few variables are put in as optimizations to reduce
      * TLB lookup overheads. For a given Mask, what is the address shift
      * amount, and what is the OffsetMask
@@ -74,8 +74,8 @@ struct PTE
     int OffsetMask;
 
     bool Valid() { return (V0 | V1); };
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const;
+    void unserialize(CheckpointIn &cp);
 };
 
 // WARN: This particular TLB entry is not necessarily conformed to MIPS ISA
@@ -100,12 +100,12 @@ struct TlbEntry
     void
     updateVaddr(Addr new_vaddr) {}
 
-    void serialize(std::ostream &os)
+    void serialize(CheckpointOut &cp) const
     {
         SERIALIZE_SCALAR(_pageStart);
     }
 
-    void unserialize(Checkpoint *cp, const std::string &section)
+    void unserialize(CheckpointIn &cp)
     {
         UNSERIALIZE_SCALAR(_pageStart);
     }

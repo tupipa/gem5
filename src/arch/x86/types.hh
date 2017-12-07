@@ -45,7 +45,6 @@
 #include "arch/generic/types.hh"
 #include "base/bitunion.hh"
 #include "base/cprintf.hh"
-#include "base/hashmap.hh"
 #include "base/types.hh"
 #include "sim/serialize.hh"
 
@@ -67,7 +66,10 @@ namespace X86ISA
         AddressSizeOverride,
         Lock,
         Rep,
-        Repne
+        Repne,
+        Vex2Prefix,
+        Vex3Prefix,
+        XopPrefix,
     };
 
     BitUnion8(LegacyPrefixVector)
@@ -104,12 +106,52 @@ namespace X86ISA
         Bitfield<0> b;
     EndBitUnion(Rex)
 
+    BitUnion8(Vex2Of3)
+        // Inverted bits from the REX prefix.
+        Bitfield<7> r;
+        Bitfield<6> x;
+        Bitfield<5> b;
+        // Selector for what would be two or three byte opcode types.
+        Bitfield<4, 0> m;
+    EndBitUnion(Vex2Of3)
+
+    BitUnion8(Vex3Of3)
+        // Bit from the REX prefix.
+        Bitfield<7> w;
+        // Inverted extra register index.
+        Bitfield<6, 3>  v;
+        // Vector length specifier.
+        Bitfield<2> l;
+        // Implied 66, F2, or F3 opcode prefix.
+        Bitfield<1, 0> p;
+    EndBitUnion(Vex3Of3)
+
+    BitUnion8(Vex2Of2)
+        // Inverted bit from the REX prefix.
+        Bitfield<7> r;
+        // Inverted extra register index.
+        Bitfield<6, 3>  v;
+        // Vector length specifier
+        Bitfield<2> l;
+        // Implied 66, F2, or F3 opcode prefix.
+        Bitfield<1, 0> p;
+    EndBitUnion(Vex2Of2)
+
+    BitUnion8(VexInfo)
+        // Extra register index.
+        Bitfield<6, 3> v;
+        // Vector length specifier.
+        Bitfield<2> l;
+        // Whether the VEX prefix was used.
+        Bitfield<0> present;
+    EndBitUnion(VexInfo)
+
     enum OpcodeType {
         BadOpcode,
         OneByteOpcode,
         TwoByteOpcode,
         ThreeByte0F38Opcode,
-        ThreeByte0F3AOpcode
+        ThreeByte0F3AOpcode,
     };
 
     static inline const char *
@@ -160,6 +202,8 @@ namespace X86ISA
         //Prefixes
         LegacyPrefixVector legacy;
         Rex rex;
+        VexInfo vex;
+
         //This holds all of the bytes of the opcode
         struct
         {
@@ -191,11 +235,13 @@ namespace X86ISA
         operator << (std::ostream & os, const ExtMachInst & emi)
     {
         ccprintf(os, "\n{\n\tleg = %#x,\n\trex = %#x,\n\t"
+                     "vex/xop = %#x,\n\t"
                      "op = {\n\t\ttype = %s,\n\t\top = %#x,\n\t\t},\n\t"
                      "modRM = %#x,\n\tsib = %#x,\n\t"
                      "immediate = %#x,\n\tdisplacement = %#x\n\t"
                      "dispSize = %d}\n",
                      (uint8_t)emi.legacy, (uint8_t)emi.rex,
+                     (uint8_t)emi.vex,
                      opcodeTypeToStr(emi.opcode.type), (uint8_t)emi.opcode.op,
                      (uint8_t)emi.modRM, (uint8_t)emi.sib,
                      emi.immediate, emi.displacement, emi.dispSize);
@@ -205,31 +251,33 @@ namespace X86ISA
     inline static bool
         operator == (const ExtMachInst &emi1, const ExtMachInst &emi2)
     {
-        if(emi1.legacy != emi2.legacy)
+        if (emi1.legacy != emi2.legacy)
             return false;
-        if(emi1.rex != emi2.rex)
+        if (emi1.rex != emi2.rex)
             return false;
-        if(emi1.opcode.type != emi2.opcode.type)
+        if (emi1.vex != emi2.vex)
             return false;
-        if(emi1.opcode.op != emi2.opcode.op)
+        if (emi1.opcode.type != emi2.opcode.type)
             return false;
-        if(emi1.modRM != emi2.modRM)
+        if (emi1.opcode.op != emi2.opcode.op)
             return false;
-        if(emi1.sib != emi2.sib)
+        if (emi1.modRM != emi2.modRM)
             return false;
-        if(emi1.immediate != emi2.immediate)
+        if (emi1.sib != emi2.sib)
             return false;
-        if(emi1.displacement != emi2.displacement)
+        if (emi1.immediate != emi2.immediate)
             return false;
-        if(emi1.mode != emi2.mode)
+        if (emi1.displacement != emi2.displacement)
             return false;
-        if(emi1.opSize != emi2.opSize)
+        if (emi1.mode != emi2.mode)
             return false;
-        if(emi1.addrSize != emi2.addrSize)
+        if (emi1.opSize != emi2.opSize)
             return false;
-        if(emi1.stackSize != emi2.stackSize)
+        if (emi1.addrSize != emi2.addrSize)
             return false;
-        if(emi1.dispSize != emi2.dispSize)
+        if (emi1.stackSize != emi2.stackSize)
+            return false;
+        if (emi1.dispSize != emi2.dispSize)
             return false;
         return true;
     }
@@ -252,13 +300,21 @@ namespace X86ISA
         PCState() {}
         PCState(Addr val) { set(val); }
 
+        void
+        setNPC(Addr val)
+        {
+            Base::setNPC(val);
+            _size = 0;
+        }
+
         uint8_t size() const { return _size; }
         void size(uint8_t newSize) { _size = newSize; }
 
         bool
         branching() const
         {
-            return this->npc() != this->pc() + size();
+            return (this->npc() != this->pc() + size()) ||
+                   (this->nupc() != this->upc() + 1);
         }
 
         void
@@ -276,28 +332,29 @@ namespace X86ISA
         }
 
         void
-        serialize(std::ostream &os)
+        serialize(CheckpointOut &cp) const
         {
-            Base::serialize(os);
+            Base::serialize(cp);
             SERIALIZE_SCALAR(_size);
         }
 
         void
-        unserialize(Checkpoint *cp, const std::string &section)
+        unserialize(CheckpointIn &cp)
         {
-            Base::unserialize(cp, section);
+            Base::unserialize(cp);
             UNSERIALIZE_SCALAR(_size);
         }
     };
 
 }
 
-__hash_namespace_begin
+namespace std {
     template<>
     struct hash<X86ISA::ExtMachInst> {
         size_t operator()(const X86ISA::ExtMachInst &emi) const {
-            return (((uint64_t)emi.legacy << 40) |
-                    ((uint64_t)emi.rex  << 32) |
+            return (((uint64_t)emi.legacy << 48) |
+                    ((uint64_t)emi.rex << 40) |
+                    ((uint64_t)emi.vex << 32) |
                     ((uint64_t)emi.modRM << 24) |
                     ((uint64_t)emi.sib << 16) |
                     ((uint64_t)emi.opcode.type << 8) |
@@ -308,17 +365,17 @@ __hash_namespace_begin
                     emi.stackSize ^ emi.dispSize;
         };
     };
-__hash_namespace_end
+}
 
 // These two functions allow ExtMachInst to be used with SERIALIZE_SCALAR
 // and UNSERIALIZE_SCALAR.
 template <>
 void
-paramOut(std::ostream &os, const std::string &name,
+paramOut(CheckpointOut &cp, const std::string &name,
          const X86ISA::ExtMachInst &machInst);
 template <>
 void
-paramIn(Checkpoint *cp, const std::string &section,
-        const std::string &name, X86ISA::ExtMachInst &machInst);
+paramIn(CheckpointIn &cp, const std::string &name,
+        X86ISA::ExtMachInst &machInst);
 
 #endif // __ARCH_X86_TYPES_HH__

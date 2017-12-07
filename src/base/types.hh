@@ -42,6 +42,7 @@
 #include <cassert>
 #include <memory>
 #include <ostream>
+#include <stdexcept>
 
 #include "base/refcnt.hh"
 
@@ -72,8 +73,7 @@ const Tick MaxTick = ULL(0xffffffffffffffff);
  * typedef, aiming to avoid unintentional mixing of cycles and ticks
  * in the code base.
  *
- * Operators are defined inside an ifndef block to avoid swig touching
- * them. Note that there is no overloading of the bool operator as the
+ * Note that there is no overloading of the bool operator as the
  * compiler is allowed to turn booleans into integers and this causes
  * a whole range of issues in a handful locations. The solution to
  * this problem would be to use the safe bool idiom, but for now we
@@ -91,15 +91,13 @@ class Cycles
   public:
 
     /** Explicit constructor assigning a value. */
-    explicit Cycles(uint64_t _c) : c(_c) { }
+    explicit constexpr Cycles(uint64_t _c) : c(_c) { }
 
     /** Default constructor for parameter classes. */
     Cycles() : c(0) { }
 
-#ifndef SWIG // keep the operators away from SWIG
-
     /** Converting back to the value type. */
-    operator uint64_t() const { return c; }
+    constexpr operator uint64_t() const { return c; }
 
     /** Prefix increment operator. */
     Cycles& operator++()
@@ -110,29 +108,29 @@ class Cycles
     { assert(c != 0); --c; return *this; }
 
     /** In-place addition of cycles. */
-    const Cycles& operator+=(const Cycles& cc)
+    Cycles& operator+=(const Cycles& cc)
     { c += cc.c; return *this; }
 
     /** Greater than comparison used for > Cycles(0). */
-    bool operator>(const Cycles& cc) const
+    constexpr bool operator>(const Cycles& cc) const
     { return c > cc.c; }
 
-    const Cycles operator +(const Cycles& b) const
+    constexpr Cycles operator +(const Cycles& b) const
     { return Cycles(c + b.c); }
 
-    const Cycles operator -(const Cycles& b) const
-    { assert(c >= b.c); return Cycles(c - b.c); }
+    constexpr Cycles operator -(const Cycles& b) const
+    {
+        return c >= b.c ? Cycles(c - b.c) :
+            throw std::invalid_argument("RHS cycle value larger than LHS");
+    }
 
-    const Cycles operator <<(const int32_t shift)
+    constexpr Cycles operator <<(const int32_t shift) const
     { return Cycles(c << shift); }
 
-    const Cycles operator >>(const int32_t shift)
+    constexpr Cycles operator >>(const int32_t shift) const
     { return Cycles(c >> shift); }
 
     friend std::ostream& operator<<(std::ostream &out, const Cycles & cycles);
-
-#endif // SWIG not touching operators
-
 };
 
 /**
@@ -173,6 +171,10 @@ const Addr MaxAddr = (Addr)-1;
 typedef int16_t ThreadID;
 const ThreadID InvalidThreadID = (ThreadID)-1;
 
+/** Globally unique thread context ID */
+typedef int ContextID;
+const ContextID InvalidContextID = (ContextID)-1;
+
 /**
  * Port index/ID type, and a symbolic name for an invalid port id.
  */
@@ -182,11 +184,22 @@ const PortID InvalidPortID = (PortID)-1;
 class FaultBase;
 typedef std::shared_ptr<FaultBase> Fault;
 
-#ifndef SWIG // Swig gets really confused by decltype
 // Rather than creating a shared_ptr instance and assigning it nullptr,
 // we just create an alias.
 constexpr decltype(nullptr) NoFault = nullptr;
-#endif
+
+struct AtomicOpFunctor
+{
+    virtual void operator()(uint8_t *p) = 0;
+    virtual ~AtomicOpFunctor() {}
+};
+
+template <class T>
+struct TypedAtomicOpFunctor : public AtomicOpFunctor
+{
+    void operator()(uint8_t *p) { execute((T *)p); }
+    virtual void execute(T * p) = 0;
+};
 
 enum ByteOrder {
     BigEndianByteOrder,

@@ -43,7 +43,7 @@
 #ifndef __ARCH_GENERIC_TLB_HH__
 #define __ARCH_GENERIC_TLB_HH__
 
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "mem/request.hh"
 #include "sim/sim_object.hh"
 
@@ -123,7 +123,7 @@ class GenericTLB : public BaseTLB
     {}
 
   public:
-    void demapPage(Addr vaddr, uint64_t asn);
+    void demapPage(Addr vaddr, uint64_t asn) override;
 
     Fault translateAtomic(RequestPtr req, ThreadContext *tc, Mode mode);
     void translateTiming(RequestPtr req, ThreadContext *tc,

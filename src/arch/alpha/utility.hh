@@ -35,7 +35,7 @@
 #include "arch/alpha/isa_traits.hh"
 #include "arch/alpha/registers.hh"
 #include "arch/alpha/types.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "cpu/static_inst.hh"
 #include "cpu/thread_context.hh"
 #include "arch/alpha/ev5.hh"
@@ -78,7 +78,7 @@ inline void startupCPU(ThreadContext *tc, int cpuId)
 inline Addr PteAddr(Addr a) { return (a & PteMask) << PteShift; }
 
 // User Virtual
-inline bool IsUSeg(Addr a) { return USegBase <= a && a <= USegEnd; }
+inline bool IsUSeg(Addr a) { assert(USegBase == 0); return a <= USegEnd; }
 
 // Kernel Direct Mapped
 inline bool IsK0Seg(Addr a) { return K0SegBase <= a && a <= K0SegEnd; }

@@ -28,8 +28,9 @@
  * Authors: Gabe Black
  */
 
-#include "arch/x86/decoder.hh"
 #include "arch/x86/isa.hh"
+
+#include "arch/x86/decoder.hh"
 #include "arch/x86/tlb.hh"
 #include "cpu/base.hh"
 #include "cpu/thread_context.hh"
@@ -129,11 +130,7 @@ ISA::readMiscRegNoEffect(int miscReg) const
     // Make sure we're not dealing with an illegal control register.
     // Instructions should filter out these indexes, and nothing else should
     // attempt to read them directly.
-    assert( miscReg != MISCREG_CR1 &&
-            !(miscReg > MISCREG_CR4 &&
-              miscReg < MISCREG_CR8) &&
-            !(miscReg > MISCREG_CR8 &&
-              miscReg <= MISCREG_CR15));
+    assert(isValidMiscReg(miscReg));
 
     return regVal[miscReg];
 }
@@ -148,7 +145,7 @@ ISA::readMiscReg(int miscReg, ThreadContext * tc)
     if (miscReg == MISCREG_FSW) {
         MiscReg fsw = regVal[MISCREG_FSW];
         MiscReg top = regVal[MISCREG_X87_TOP];
-        return (fsw & (~(7ULL << 11))) + (top << 11);
+        return insertBits(fsw, 11, 13, top);
     }
 
     return readMiscRegNoEffect(miscReg);
@@ -160,12 +157,40 @@ ISA::setMiscRegNoEffect(int miscReg, MiscReg val)
     // Make sure we're not dealing with an illegal control register.
     // Instructions should filter out these indexes, and nothing else should
     // attempt to write to them directly.
-    assert( miscReg != MISCREG_CR1 &&
-            !(miscReg > MISCREG_CR4 &&
-              miscReg < MISCREG_CR8) &&
-            !(miscReg > MISCREG_CR8 &&
-              miscReg <= MISCREG_CR15));
-    regVal[miscReg] = val;
+    assert(isValidMiscReg(miscReg));
+
+    HandyM5Reg m5Reg = regVal[MISCREG_M5_REG];
+    int reg_width = 64;
+    switch (miscReg) {
+      case MISCREG_X87_TOP:
+        reg_width = 3;
+        break;
+      case MISCREG_FTW:
+        reg_width = 8;
+        break;
+      case MISCREG_FSW:
+      case MISCREG_FCW:
+      case MISCREG_FOP:
+        reg_width = 16;
+        break;
+      case MISCREG_MXCSR:
+        reg_width = 32;
+        break;
+      case MISCREG_FISEG:
+      case MISCREG_FOSEG:
+        if (m5Reg.submode != SixtyFourBitMode)
+            reg_width = 16;
+        break;
+      case MISCREG_FIOFF:
+      case MISCREG_FOOFF:
+        if (m5Reg.submode != SixtyFourBitMode)
+            reg_width = 32;
+        break;
+      default:
+        break;
+    }
+
+    regVal[miscReg] = val & mask(reg_width);
 }
 
 void
@@ -370,13 +395,13 @@ ISA::setMiscReg(int miscReg, MiscReg val, ThreadContext * tc)
 }
 
 void
-ISA::serialize(std::ostream & os)
+ISA::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_ARRAY(regVal, NumMiscRegs);
 }
 
 void
-ISA::unserialize(Checkpoint * cp, const std::string & section)
+ISA::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_ARRAY(regVal, NumMiscRegs);
     updateHandyM5Reg(regVal[MISCREG_EFER],

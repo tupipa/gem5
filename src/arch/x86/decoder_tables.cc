@@ -55,6 +55,8 @@ namespace X86ISA
     const uint8_t RE = Rep;
     const uint8_t RN = Repne;
     const uint8_t RX = RexPrefix;
+    const uint8_t V2 = Vex2Prefix;
+    const uint8_t V3 = Vex3Prefix;
 
     //This table identifies whether a byte is a prefix, and if it is,
     //which prefix it is.
@@ -73,7 +75,7 @@ namespace X86ISA
 /*   9*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
 /*   A*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
 /*   B*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
-/*   C*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
+/*   C*/ 0 , 0 , 0 , 0 , V3, V2, 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
 /*   D*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
 /*   E*/ 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0,
 /*   F*/ LO, 0 , RN, RE, 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0 , 0

@@ -693,7 +693,7 @@ UFSHostDevice::UFSSCSIDevice::readFlash(uint8_t* readaddr, uint64_t offset,
                                    uint32_t size)
 {
     /** read from image, and get to memory */
-    for(int count = 0; count < (size / SectorSize); count++)
+    for (int count = 0; count < (size / SectorSize); count++)
         flashDisk->read(&(readaddr[SectorSize*count]), (offset /
                                                         SectorSize) + count);
 }
@@ -707,7 +707,7 @@ UFSHostDevice::UFSSCSIDevice::writeFlash(uint8_t* writeaddr, uint64_t offset,
                                     uint32_t size)
 {
     /** Get from fifo and write to image*/
-    for(int count = 0; count < (size / SectorSize); count++)
+    for (int count = 0; count < (size / SectorSize); count++)
         flashDisk->write(&(writeaddr[SectorSize * count]),
                          (offset / SectorSize) + count);
 }
@@ -733,9 +733,8 @@ UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams* p) :
     transferTrack(0),
     taskCommandTrack(0),
     idlePhaseStart(0),
-    drainManager(NULL),
-    SCSIResumeEvent(this),
-    UTPEvent(this)
+    SCSIResumeEvent([this]{ SCSIStart(); }, name()),
+    UTPEvent([this]{ finalUTP(); }, name())
 {
     DPRINTF(UFSHostDevice, "The hostcontroller hosts %d Logic units\n",
             lunAvail);
@@ -746,7 +745,7 @@ UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams* p) :
     memReadCallback = new MakeCallback<UFSHostDevice,
         &UFSHostDevice::readCallback>(this);
 
-    for(int count = 0; count < lunAvail; count++) {
+    for (int count = 0; count < lunAvail; count++) {
         UFSDevice[count] = new UFSSCSIDevice(p, count, transferDoneCallback,
                                              memReadCallback);
     }
@@ -775,6 +774,8 @@ UFSHostDeviceParams::create()
 void
 UFSHostDevice::regStats()
 {
+    DmaDevice::regStats();
+
     using namespace Stats;
 
     std::string UFSHost_name = name() + ".UFSDiskHost";
@@ -1279,7 +1280,8 @@ UFSHostDevice::requestHandler()
             task_info.size = size;
             task_info.done = UFSHCIMem.TMUTMRLDBR;
             taskInfo.push_back(task_info);
-            taskEventQueue.push_back(this);
+            taskEventQueue.push_back(
+                EventFunctionWrapper([this]{ taskStart(); }, name()));
             writeDevice(&taskEventQueue.back(), false, address, size,
                         reinterpret_cast<uint8_t*>
                         (&taskInfo.back().destination), 0, 0);
@@ -1327,7 +1329,8 @@ UFSHostDevice::requestHandler()
                 UTPTransferReqDesc;
             DPRINTF(UFSHostDevice, "Initial transfer start: 0x%8x\n",
                     transferstart_info.done);
-            transferEventQueue.push_back(this);
+            transferEventQueue.push_back(
+                EventFunctionWrapper([this]{ transferStart(); }, name()));
 
             if (transferEventQueue.size() < 2) {
                 writeDevice(&transferEventQueue.front(), false,
@@ -1673,7 +1676,7 @@ UFSHostDevice::LUNSignal()
     uint8_t this_lun = 0;
 
     //while we haven't found the right lun, keep searching
-    while((this_lun < lunAvail) && !UFSDevice[this_lun]->finishedCommand())
+    while ((this_lun < lunAvail) && !UFSDevice[this_lun]->finishedCommand())
         ++this_lun;
 
     if (this_lun < lunAvail) {
@@ -1797,13 +1800,13 @@ UFSHostDevice::readDone()
         }
 
     /**done, generate interrupt if we havent got one already*/
-    if(!(UFSHCIMem.ORInterruptStatus & 0x01)) {
+    if (!(UFSHCIMem.ORInterruptStatus & 0x01)) {
         UFSHCIMem.ORInterruptStatus |= UTPTransferREQCOMPL;
         generateInterrupt();
     }
 
 
-    if(!readDoneEvent.empty()) {
+    if (!readDoneEvent.empty()) {
         readDoneEvent.pop_front();
     }
 }
@@ -1823,6 +1826,8 @@ UFSHostDevice::generateInterrupt()
     pendingDoorbells = 0;
     DPRINTF(UFSHostDevice, "Clear doorbell %X\n", UFSHCIMem.TRUTRLDBR);
 
+    checkDrain();
+
     /**step6 raise interrupt*/
     gic->sendInt(intNum);
     DPRINTF(UFSHostDevice, "Send interrupt @ transaction: 0x%8x!\n",
@@ -1838,6 +1843,8 @@ UFSHostDevice::clearInterrupt()
 {
     gic->clearInt(intNum);
     DPRINTF(UFSHostDevice, "Clear interrupt: 0x%8x!\n", countInt);
+
+    checkDrain();
 
     if (!(UFSHCIMem.TRUTRLDBR)) {
         idlePhaseStart = curTick();
@@ -1881,11 +1888,13 @@ UFSHostDevice::writeDevice(Event* additional_action, bool toDisk, Addr
     if (toDisk) {
         ++writePendingNum;
 
-        while(!writeDoneEvent.empty() && (writeDoneEvent.front().when()
+        while (!writeDoneEvent.empty() && (writeDoneEvent.front().when()
                                           < curTick()))
             writeDoneEvent.pop_front();
 
-        writeDoneEvent.push_back(this);
+        writeDoneEvent.push_back(
+            EventFunctionWrapper([this]{ writeDone(); },
+                                 name()));
         assert(!writeDoneEvent.back().scheduled());
 
         /**destination is an offset here since we are writing to a disk*/
@@ -2084,7 +2093,9 @@ UFSHostDevice::readDevice(bool lastTransfer, Addr start, uint32_t size,
     /** check wether interrupt is needed */
     if (lastTransfer) {
         ++readPendingNum;
-        readDoneEvent.push_back(this);
+        readDoneEvent.push_back(
+            EventFunctionWrapper([this]{ readDone(); },
+                                 name()));
         assert(!readDoneEvent.back().scheduled());
         dmaPort.dmaAction(MemCmd::WriteReq, start, size,
                           &readDoneEvent.back(), destination, 0);
@@ -2240,7 +2251,7 @@ UFSHostDevice::readCallback()
     uint8_t this_lun = 0;
 
     //while we haven't found the right lun, keep searching
-    while((this_lun < lunAvail) && !UFSDevice[this_lun]->finishedRead())
+    while ((this_lun < lunAvail) && !UFSDevice[this_lun]->finishedRead())
         ++this_lun;
 
     DPRINTF(UFSHostDevice, "Found LUN %d messages pending for clean: %d\n",
@@ -2251,7 +2262,8 @@ UFSHostDevice::readCallback()
         UFSDevice[this_lun]->clearReadSignal();
         SSDReadPending.push_back(UFSDevice[this_lun]->SSDReadInfo.front());
         UFSDevice[this_lun]->SSDReadInfo.pop_front();
-        readGarbageEventQueue.push_back(this);
+        readGarbageEventQueue.push_back(
+            EventFunctionWrapper([this]{ readGarbage(); }, name()));
 
         //make sure the queue is popped a the end of the dma transaction
         readDevice(false, SSDReadPending.front().offset,
@@ -2283,11 +2295,11 @@ UFSHostDevice::readGarbage()
  */
 
 void
-UFSHostDevice::serialize(std::ostream &os)
+UFSHostDevice::serialize(CheckpointOut &cp) const
 {
-    DmaDevice::serialize(os);
+    DmaDevice::serialize(cp);
 
-    uint8_t* temp_HCI_mem = reinterpret_cast<uint8_t*>(&UFSHCIMem);
+    const uint8_t* temp_HCI_mem = reinterpret_cast<const uint8_t*>(&UFSHCIMem);
     SERIALIZE_ARRAY(temp_HCI_mem, sizeof(HCIMem));
 
     uint32_t lun_avail = lunAvail;
@@ -2300,9 +2312,9 @@ UFSHostDevice::serialize(std::ostream &os)
  */
 
 void
-UFSHostDevice::unserialize(Checkpoint *cp, const std::string &section)
+UFSHostDevice::unserialize(CheckpointIn &cp)
 {
-    DmaDevice::unserialize(cp, section);
+    DmaDevice::unserialize(cp);
     uint8_t* temp_HCI_mem = reinterpret_cast<uint8_t*>(&UFSHCIMem);
     UNSERIALIZE_ARRAY(temp_HCI_mem, sizeof(HCIMem));
 
@@ -2316,29 +2328,16 @@ UFSHostDevice::unserialize(Checkpoint *cp, const std::string &section)
  * Drain; needed to enable checkpoints
  */
 
-unsigned int
-UFSHostDevice::drain(DrainManager *dm)
+DrainState
+UFSHostDevice::drain()
 {
-    unsigned int count = 0;
-
-    // check pio, dma port, and doorbells
-    count = pioPort.drain(dm) + dmaPort.drain(dm);
-
     if (UFSHCIMem.TRUTRLDBR) {
-        count += 1;
-        drainManager = dm;
-    } else {
-        DPRINTF(UFSHostDevice, "UFSHostDevice in drained state\n");
-    }
-
-    if (count) {
         DPRINTF(UFSHostDevice, "UFSDevice is draining...\n");
-        setDrainState(Drainable::Draining);
+        return DrainState::Draining;
     } else {
         DPRINTF(UFSHostDevice, "UFSDevice drained\n");
-        setDrainState(Drainable::Drained);
+        return DrainState::Drained;
     }
-    return count;
 }
 
 /**
@@ -2348,16 +2347,14 @@ UFSHostDevice::drain(DrainManager *dm)
 void
 UFSHostDevice::checkDrain()
 {
-    if (drainManager == NULL) {
+    if (drainState() != DrainState::Draining)
         return;
-    }
 
     if (UFSHCIMem.TRUTRLDBR) {
         DPRINTF(UFSHostDevice, "UFSDevice is still draining; with %d active"
             " doorbells\n", activeDoorbells);
     } else {
         DPRINTF(UFSHostDevice, "UFSDevice is done draining\n");
-        drainManager->signalDrainDone();
-        drainManager = NULL;
+        signalDrainDone();
     }
 }

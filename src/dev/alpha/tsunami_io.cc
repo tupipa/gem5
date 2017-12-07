@@ -34,6 +34,8 @@
  * Tsunami I/O including PIC, PIT, RTC, DMA
  */
 
+#include "dev/alpha/tsunami_io.hh"
+
 #include <sys/time.h>
 
 #include <deque>
@@ -46,7 +48,6 @@
 #include "debug/Tsunami.hh"
 #include "dev/alpha/tsunami.hh"
 #include "dev/alpha/tsunami_cchip.hh"
-#include "dev/alpha/tsunami_io.hh"
 #include "dev/alpha/tsunamireg.h"
 #include "dev/rtcreg.h"
 #include "mem/packet.hh"
@@ -251,7 +252,7 @@ TsunamiIO::clearPIC(uint8_t bitvector)
 }
 
 void
-TsunamiIO::serialize(ostream &os)
+TsunamiIO::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(rtcAddr);
     SERIALIZE_SCALAR(timerData);
@@ -263,12 +264,12 @@ TsunamiIO::serialize(ostream &os)
     SERIALIZE_SCALAR(picInterrupting);
 
     // Serialize the timers
-    pitimer.serialize("pitimer", os);
-    rtc.serialize("rtc", os);
+    pitimer.serialize("pitimer", cp);
+    rtc.serialize("rtc", cp);
 }
 
 void
-TsunamiIO::unserialize(Checkpoint *cp, const string &section)
+TsunamiIO::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(rtcAddr);
     UNSERIALIZE_SCALAR(timerData);
@@ -280,8 +281,8 @@ TsunamiIO::unserialize(Checkpoint *cp, const string &section)
     UNSERIALIZE_SCALAR(picInterrupting);
 
     // Unserialize the timers
-    pitimer.unserialize("pitimer", cp, section);
-    rtc.unserialize("rtc", cp, section);
+    pitimer.unserialize("pitimer", cp);
+    rtc.unserialize("rtc", cp);
 }
 
 void

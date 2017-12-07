@@ -32,18 +32,15 @@
  * @file
  * Definitions of page table
  */
-#include <fstream>
-#include <map>
 #include <string>
 
-#include "base/bitfield.hh"
-#include "base/intmath.hh"
+#include "arch/isa_traits.hh"
+#include "arch/tlb.hh"
 #include "base/trace.hh"
 #include "config/the_isa.hh"
 #include "debug/MMU.hh"
 #include "mem/multi_level_page_table.hh"
-#include "sim/faults.hh"
-#include "sim/sim_object.hh"
+#include "mem/page_table.hh"
 
 using namespace std;
 using namespace TheISA;
@@ -314,19 +311,18 @@ MultiLevelPageTable<ISAOps>::lookup(Addr vaddr, TlbEntry &entry)
 
 template <class ISAOps>
 void
-MultiLevelPageTable<ISAOps>::serialize(std::ostream &os)
+MultiLevelPageTable<ISAOps>::serialize(CheckpointOut &cp) const
 {
     /** Since, the page table is stored in system memory
      * which is serialized separately, we will serialize
      * just the base pointer
      */
-    paramOut(os, "ptable.pointer", basePtr);
+    paramOut(cp, "ptable.pointer", basePtr);
 }
 
 template <class ISAOps>
 void
-MultiLevelPageTable<ISAOps>::unserialize(Checkpoint *cp,
-                                         const std::string &section)
+MultiLevelPageTable<ISAOps>::unserialize(CheckpointIn &cp)
 {
-    paramIn(cp, section, "ptable.pointer", basePtr);
+    paramIn(cp, "ptable.pointer", basePtr);
 }

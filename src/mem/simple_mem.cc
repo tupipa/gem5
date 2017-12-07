@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2013 ARM Limited
+ * Copyright (c) 2010-2013, 2015 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -42,8 +42,10 @@
  *          Andreas Hansson
  */
 
-#include "base/random.hh"
 #include "mem/simple_mem.hh"
+
+#include "base/random.hh"
+#include "base/trace.hh"
 #include "debug/Drain.hh"
 
 using namespace std;
@@ -53,7 +55,8 @@ SimpleMemory::SimpleMemory(const SimpleMemoryParams* p) :
     port(name() + ".port", *this), latency(p->latency),
     latency_var(p->latency_var), bandwidth(p->bandwidth), isBusy(false),
     retryReq(false), retryResp(false),
-    releaseEvent(this), dequeueEvent(this), drainManager(NULL)
+    releaseEvent([this]{ release(); }, name()),
+    dequeueEvent([this]{ dequeue(); }, name())
 {
 }
 
@@ -72,8 +75,11 @@ SimpleMemory::init()
 Tick
 SimpleMemory::recvAtomic(PacketPtr pkt)
 {
+    panic_if(pkt->cacheResponding(), "Should not see packets where cache "
+             "is responding");
+
     access(pkt);
-    return pkt->memInhibitAsserted() ? 0 : getLatency();
+    return getLatency();
 }
 
 void
@@ -97,23 +103,16 @@ SimpleMemory::recvFunctional(PacketPtr pkt)
 bool
 SimpleMemory::recvTimingReq(PacketPtr pkt)
 {
-    /// @todo temporary hack to deal with memory corruption issues until
-    /// 4-phase transactions are complete
-    for (int x = 0; x < pendingDelete.size(); x++)
-        delete pendingDelete[x];
-    pendingDelete.clear();
+    panic_if(pkt->cacheResponding(), "Should not see packets where cache "
+             "is responding");
 
-    if (pkt->memInhibitAsserted()) {
-        // snooper will supply based on copy of packet
-        // still target's responsibility to delete packet
-        pendingDelete.push_back(pkt);
-        return true;
-    }
+    panic_if(!(pkt->isRead() || pkt->isWrite()),
+             "Should only see read and writes at memory controller, "
+             "saw %s to %#llx\n", pkt->cmdString(), pkt->getAddr());
 
-    // we should never get a new request after committing to retry the
-    // current one, the bus violates the rule as it simply sends a
-    // retry to the next one waiting on the retry list, so simply
-    // ignore it
+    // we should not get a new request after committing to retry the
+    // current one, but unfortunately the CPU violates this rule, so
+    // simply ignore it for now
     if (retryReq)
         return false;
 
@@ -124,7 +123,10 @@ SimpleMemory::recvTimingReq(PacketPtr pkt)
         return false;
     }
 
-    // @todo someone should pay for this
+    // technically the packet only reaches us after the header delay,
+    // and since this is a memory controller we also need to
+    // deserialise the payload before performing any write operation
+    Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
     pkt->headerDelay = pkt->payloadDelay = 0;
 
     // update the release time according to the bandwidth limit, and
@@ -132,21 +134,16 @@ SimpleMemory::recvTimingReq(PacketPtr pkt)
     // rather than long term as it is the short term data rate that is
     // limited for any real memory
 
-    // only look at reads and writes when determining if we are busy,
-    // and for how long, as it is not clear what to regulate for the
-    // other types of commands
-    if (pkt->isRead() || pkt->isWrite()) {
-        // calculate an appropriate tick to release to not exceed
-        // the bandwidth limit
-        Tick duration = pkt->getSize() * bandwidth;
+    // calculate an appropriate tick to release to not exceed
+    // the bandwidth limit
+    Tick duration = pkt->getSize() * bandwidth;
 
-        // only consider ourselves busy if there is any need to wait
-        // to avoid extra events being scheduled for (infinitely) fast
-        // memories
-        if (duration != 0) {
-            schedule(releaseEvent, curTick() + duration);
-            isBusy = true;
-        }
+    // only consider ourselves busy if there is any need to wait
+    // to avoid extra events being scheduled for (infinitely) fast
+    // memories
+    if (duration != 0) {
+        schedule(releaseEvent, curTick() + duration);
+        isBusy = true;
     }
 
     // go ahead and deal with the packet and put the response in the
@@ -158,14 +155,28 @@ SimpleMemory::recvTimingReq(PacketPtr pkt)
         // recvAtomic() should already have turned packet into
         // atomic response
         assert(pkt->isResponse());
-        // to keep things simple (and in order), we put the packet at
-        // the end even if the latency suggests it should be sent
-        // before the packet(s) before it
-        packetQueue.emplace_back(DeferredPacket(pkt, curTick() + getLatency()));
+
+        Tick when_to_send = curTick() + receive_delay + getLatency();
+
+        // typically this should be added at the end, so start the
+        // insertion sort with the last element, also make sure not to
+        // re-order in front of some existing packet with the same
+        // address, the latter is important as this memory effectively
+        // hands out exclusive copies (shared is not asserted)
+        auto i = packetQueue.end();
+        --i;
+        while (i != packetQueue.begin() && when_to_send < i->tick &&
+               i->pkt->getAddr() != pkt->getAddr())
+            --i;
+
+        // emplace inserts the element before the position pointed to by
+        // the iterator, so advance it one step
+        packetQueue.emplace(++i, pkt, when_to_send);
+
         if (!retryResp && !dequeueEvent.scheduled())
             schedule(dequeueEvent, packetQueue.back().tick);
     } else {
-        pendingDelete.push_back(pkt);
+        pendingDelete.reset(pkt);
     }
 
     return true;
@@ -200,10 +211,9 @@ SimpleMemory::dequeue()
             // already have an event scheduled, so use re-schedule
             reschedule(dequeueEvent,
                        std::max(packetQueue.front().tick, curTick()), true);
-        } else if (drainManager) {
-            DPRINTF(Drain, "Drainng of SimpleMemory complete\n");
-            drainManager->signalDrainDone();
-            drainManager = NULL;
+        } else if (drainState() == DrainState::Draining) {
+            DPRINTF(Drain, "Draining of SimpleMemory complete\n");
+            signalDrainDone();
         }
     }
 }
@@ -233,23 +243,15 @@ SimpleMemory::getSlavePort(const std::string &if_name, PortID idx)
     }
 }
 
-unsigned int
-SimpleMemory::drain(DrainManager *dm)
+DrainState
+SimpleMemory::drain()
 {
-    int count = 0;
-
-    // also track our internal queue
     if (!packetQueue.empty()) {
-        count += 1;
-        drainManager = dm;
         DPRINTF(Drain, "SimpleMemory Queue has requests, waiting to drain\n");
-     }
-
-    if (count)
-        setDrainState(Drainable::Draining);
-    else
-        setDrainState(Drainable::Drained);
-    return count;
+        return DrainState::Draining;
+    } else {
+        return DrainState::Drained;
+    }
 }
 
 SimpleMemory::MemoryPort::MemoryPort(const std::string& _name,

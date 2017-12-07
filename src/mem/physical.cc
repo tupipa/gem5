@@ -37,10 +37,12 @@
  * Authors: Andreas Hansson
  */
 
+#include "mem/physical.hh"
+
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/user.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -54,15 +56,14 @@
 #include "debug/AddrRanges.hh"
 #include "debug/Checkpoint.hh"
 #include "mem/abstract_mem.hh"
-#include "mem/physical.hh"
 
 /**
  * On Linux, MAP_NORESERVE allow us to simulate a very large memory
  * without committing to actually providing the swap space on the
- * host. On OSX the MAP_NORESERVE flag does not exist, so simply make
- * it 0.
+ * host. On FreeBSD or OSX the MAP_NORESERVE flag does not exist,
+ * so simply make it 0.
  */
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0
 #endif
@@ -111,7 +112,9 @@ PhysicalMemory::PhysicalMemory(const string& _name,
             // memories are allowed to overlap in the logic address
             // map
             vector<AbstractMemory*> unmapped_mems{m};
-            createBackingStore(m->getAddrRange(), unmapped_mems);
+            createBackingStore(m->getAddrRange(), unmapped_mems,
+                               m->isConfReported(), m->isInAddrMap(),
+                               m->isKvmMap());
         }
     }
 
@@ -132,7 +135,19 @@ PhysicalMemory::PhysicalMemory(const string& _name,
                 if (!intlv_ranges.empty() &&
                     !intlv_ranges.back().mergesWith(r.first)) {
                     AddrRange merged_range(intlv_ranges);
-                    createBackingStore(merged_range, curr_memories);
+
+                    AbstractMemory *f = curr_memories.front();
+                    for (const auto& c : curr_memories)
+                        if (f->isConfReported() != c->isConfReported() ||
+                            f->isInAddrMap() != c->isInAddrMap() ||
+                            f->isKvmMap() != c->isKvmMap())
+                            fatal("Inconsistent flags in an interleaved "
+                                  "range\n");
+
+                    createBackingStore(merged_range, curr_memories,
+                                       f->isConfReported(), f->isInAddrMap(),
+                                       f->isKvmMap());
+
                     intlv_ranges.clear();
                     curr_memories.clear();
                 }
@@ -140,7 +155,10 @@ PhysicalMemory::PhysicalMemory(const string& _name,
                 curr_memories.push_back(r.second);
             } else {
                 vector<AbstractMemory*> single_memory{r.second};
-                createBackingStore(r.first, single_memory);
+                createBackingStore(r.first, single_memory,
+                                   r.second->isConfReported(),
+                                   r.second->isInAddrMap(),
+                                   r.second->isKvmMap());
             }
         }
     }
@@ -149,13 +167,26 @@ PhysicalMemory::PhysicalMemory(const string& _name,
     // ahead and do it
     if (!intlv_ranges.empty()) {
         AddrRange merged_range(intlv_ranges);
-        createBackingStore(merged_range, curr_memories);
+
+        AbstractMemory *f = curr_memories.front();
+        for (const auto& c : curr_memories)
+            if (f->isConfReported() != c->isConfReported() ||
+                f->isInAddrMap() != c->isInAddrMap() ||
+                f->isKvmMap() != c->isKvmMap())
+                fatal("Inconsistent flags in an interleaved "
+                      "range\n");
+
+        createBackingStore(merged_range, curr_memories,
+                           f->isConfReported(), f->isInAddrMap(),
+                           f->isKvmMap());
     }
 }
 
 void
 PhysicalMemory::createBackingStore(AddrRange range,
-                                   const vector<AbstractMemory*>& _memories)
+                                   const vector<AbstractMemory*>& _memories,
+                                   bool conf_table_reported,
+                                   bool in_addr_map, bool kvm_map)
 {
     panic_if(range.interleaved(),
              "Cannot create backing store for interleaved range %s\n",
@@ -184,7 +215,8 @@ PhysicalMemory::createBackingStore(AddrRange range,
 
     // remember this backing store so we can checkpoint it and unmap
     // it appropriately
-    backingStore.push_back(make_pair(range, pmem));
+    backingStore.emplace_back(range, pmem,
+                              conf_table_reported, in_addr_map, kvm_map);
 
     // point the memories to their backing store
     for (const auto& m : _memories) {
@@ -198,7 +230,7 @@ PhysicalMemory::~PhysicalMemory()
 {
     // unmap the backing store
     for (auto& s : backingStore)
-        munmap((char*)s.second, s.first.size());
+        munmap((char*)s.pmem, s.range.size());
 }
 
 bool
@@ -289,11 +321,11 @@ PhysicalMemory::functionalAccess(PacketPtr pkt)
 }
 
 void
-PhysicalMemory::serialize(ostream& os)
+PhysicalMemory::serialize(CheckpointOut &cp) const
 {
     // serialize all the locked addresses and their context ids
     vector<Addr> lal_addr;
-    vector<int> lal_cid;
+    vector<ContextID> lal_cid;
 
     for (auto& m : memories) {
         const list<LockedAddr>& locked_addrs = m->getLockedAddrList();
@@ -303,8 +335,8 @@ PhysicalMemory::serialize(ostream& os)
         }
     }
 
-    arrayParamOut(os, "lal_addr", lal_addr);
-    arrayParamOut(os, "lal_cid", lal_cid);
+    SERIALIZE_CONTAINER(lal_addr);
+    SERIALIZE_CONTAINER(lal_cid);
 
     // serialize the backing stores
     unsigned int nbr_of_stores = backingStore.size();
@@ -313,14 +345,14 @@ PhysicalMemory::serialize(ostream& os)
     unsigned int store_id = 0;
     // store each backing store memory segment in a file
     for (auto& s : backingStore) {
-        nameOut(os, csprintf("%s.store%d", name(), store_id));
-        serializeStore(os, store_id++, s.first, s.second);
+        ScopedCheckpointSection sec(cp, csprintf("store%d", store_id));
+        serializeStore(cp, store_id++, s.range, s.pmem);
     }
 }
 
 void
-PhysicalMemory::serializeStore(ostream& os, unsigned int store_id,
-                               AddrRange range, uint8_t* pmem)
+PhysicalMemory::serializeStore(CheckpointOut &cp, unsigned int store_id,
+                               AddrRange range, uint8_t* pmem) const
 {
     // we cannot use the address range for the name as the
     // memories that are not part of the address map can overlap
@@ -335,7 +367,7 @@ PhysicalMemory::serializeStore(ostream& os, unsigned int store_id,
     SERIALIZE_SCALAR(range_size);
 
     // write memory file
-    string filepath = Checkpoint::dir() + "/" + filename.c_str();
+    string filepath = CheckpointIn::dir() + "/" + filename.c_str();
     gzFile compressed_mem = gzopen(filepath.c_str(), "wb");
     if (compressed_mem == NULL)
         fatal("Can't open physical memory checkpoint file '%s'\n",
@@ -365,15 +397,15 @@ PhysicalMemory::serializeStore(ostream& os, unsigned int store_id,
 }
 
 void
-PhysicalMemory::unserialize(Checkpoint* cp, const string& section)
+PhysicalMemory::unserialize(CheckpointIn &cp)
 {
     // unserialize the locked addresses and map them to the
     // appropriate memory controller
     vector<Addr> lal_addr;
-    vector<int> lal_cid;
-    arrayParamIn(cp, section, "lal_addr", lal_addr);
-    arrayParamIn(cp, section, "lal_cid", lal_cid);
-    for(size_t i = 0; i < lal_addr.size(); ++i) {
+    vector<ContextID> lal_cid;
+    UNSERIALIZE_CONTAINER(lal_addr);
+    UNSERIALIZE_CONTAINER(lal_cid);
+    for (size_t i = 0; i < lal_addr.size(); ++i) {
         const auto& m = addrMap.find(lal_addr[i]);
         m->second->addLockedAddr(LockedAddr(lal_addr[i], lal_cid[i]));
     }
@@ -383,13 +415,14 @@ PhysicalMemory::unserialize(Checkpoint* cp, const string& section)
     UNSERIALIZE_SCALAR(nbr_of_stores);
 
     for (unsigned int i = 0; i < nbr_of_stores; ++i) {
-        unserializeStore(cp, csprintf("%s.store%d", section, i));
+        ScopedCheckpointSection sec(cp, csprintf("store%d", i));
+        unserializeStore(cp);
     }
 
 }
 
 void
-PhysicalMemory::unserializeStore(Checkpoint* cp, const string& section)
+PhysicalMemory::unserializeStore(CheckpointIn &cp)
 {
     const uint32_t chunk_size = 16384;
 
@@ -398,7 +431,7 @@ PhysicalMemory::unserializeStore(Checkpoint* cp, const string& section)
 
     string filename;
     UNSERIALIZE_SCALAR(filename);
-    string filepath = cp->cptDir + "/" + filename;
+    string filepath = cp.cptDir + "/" + filename;
 
     // mmap memoryfile
     gzFile compressed_mem = gzopen(filepath.c_str(), "rb");
@@ -406,8 +439,8 @@ PhysicalMemory::unserializeStore(Checkpoint* cp, const string& section)
         fatal("Can't open physical memory checkpoint file '%s'", filename);
 
     // we've already got the actual backing store mapped
-    uint8_t* pmem = backingStore[store_id].second;
-    AddrRange range = backingStore[store_id].first;
+    uint8_t* pmem = backingStore[store_id].pmem;
+    AddrRange range = backingStore[store_id].range;
 
     long range_size;
     UNSERIALIZE_SCALAR(range_size);

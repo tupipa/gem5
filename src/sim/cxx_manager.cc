@@ -37,13 +37,15 @@
  * Authors: Andrew Bardsley
  */
 
+#include "sim/cxx_manager.hh"
+
 #include <cstdlib>
 #include <sstream>
 
 #include "base/str.hh"
+#include "base/trace.hh"
 #include "debug/CxxConfig.hh"
 #include "mem/mem_object.hh"
-#include "sim/cxx_manager.hh"
 #include "sim/serialize.hh"
 
 CxxConfigManager::CxxConfigManager(CxxConfigFileBase &configFile_) :
@@ -413,13 +415,6 @@ CxxConfigManager::findAllObjects()
     std::vector<std::string> objects;
     configFile.getAllObjectNames(objects);
 
-    /* Sort the object names to get a consistent initialisation order
-     *  even with config file reorganisation */
-    std::sort(objects.begin(), objects.end());
-
-    for (auto i = objects.begin(); i != objects.end(); ++i)
-        findObject(*i);
-
     /* Set the traversal order for further iterators */
     objectsInOrder.clear();
     findTraversalOrder("root");
@@ -644,20 +639,15 @@ CxxConfigManager::startup()
 }
 
 unsigned int
-CxxConfigManager::drain(DrainManager *drain_manager)
+CxxConfigManager::drain()
 {
-    unsigned int ret = 0;
-
-    for (auto i = objectsInOrder.begin(); i != objectsInOrder.end(); ++ i)
-        ret += (*i)->drain(drain_manager);
-
-    return ret;
+    return DrainManager::instance().tryDrain() ? 0 : 1;
 }
 
 void
 CxxConfigManager::drainResume()
 {
-    forEachObject(&SimObject::drainResume);
+    DrainManager::instance().resume();
 }
 
 void
@@ -671,7 +661,7 @@ CxxConfigManager::serialize(std::ostream &os)
 }
 
 void
-CxxConfigManager::loadState(Checkpoint *checkpoint)
+CxxConfigManager::loadState(CheckpointIn &checkpoint)
 {
     for (auto i = objectsInOrder.begin(); i != objectsInOrder.end(); ++ i)
         (*i)->loadState(checkpoint);

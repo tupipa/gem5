@@ -35,6 +35,8 @@
  * Alpha Console Backdoor Definition
  */
 
+#include "dev/alpha/backdoor.hh"
+
 #include <cstddef>
 #include <string>
 
@@ -45,13 +47,12 @@
 #include "cpu/base.hh"
 #include "cpu/thread_context.hh"
 #include "debug/AlphaBackdoor.hh"
-#include "dev/alpha/backdoor.hh"
 #include "dev/alpha/tsunami.hh"
 #include "dev/alpha/tsunami_cchip.hh"
 #include "dev/alpha/tsunami_io.hh"
 #include "dev/platform.hh"
-#include "dev/simple_disk.hh"
-#include "dev/terminal.hh"
+#include "dev/storage/simple_disk.hh"
+#include "dev/serial/terminal.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "mem/physical.hh"
@@ -232,7 +233,7 @@ AlphaBackdoor::write(PacketPtr pkt)
         break;
 
       case offsetof(AlphaAccess, outputChar):
-        terminal->out((char)(val & 0xff));
+        terminal->writeData((char)(val & 0xff));
         break;
 
       default:
@@ -252,7 +253,7 @@ AlphaBackdoor::write(PacketPtr pkt)
 }
 
 void
-AlphaBackdoor::Access::serialize(ostream &os)
+AlphaBackdoor::Access::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(last_offset);
     SERIALIZE_SCALAR(version);
@@ -274,7 +275,7 @@ AlphaBackdoor::Access::serialize(ostream &os)
 }
 
 void
-AlphaBackdoor::Access::unserialize(Checkpoint *cp, const std::string &section)
+AlphaBackdoor::Access::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(last_offset);
     UNSERIALIZE_SCALAR(version);
@@ -296,15 +297,15 @@ AlphaBackdoor::Access::unserialize(Checkpoint *cp, const std::string &section)
 }
 
 void
-AlphaBackdoor::serialize(ostream &os)
+AlphaBackdoor::serialize(CheckpointOut &cp) const
 {
-    alphaAccess->serialize(os);
+    alphaAccess->serialize(cp);
 }
 
 void
-AlphaBackdoor::unserialize(Checkpoint *cp, const std::string &section)
+AlphaBackdoor::unserialize(CheckpointIn &cp)
 {
-    alphaAccess->unserialize(cp, section);
+    alphaAccess->unserialize(cp);
 }
 
 AlphaBackdoor *

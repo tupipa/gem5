@@ -28,12 +28,14 @@
  * Authors: Nathan Binkert
  */
 
+#include "base/time.hh"
+
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
 #include <sstream>
 
-#include "base/time.hh"
+#include "base/logging.hh"
 #include "config/use_posix_clock.hh"
 #include "sim/core.hh"
 #include "sim/serialize.hh"
@@ -117,20 +119,19 @@ Time::time() const
 }
 
 void
-Time::serialize(const std::string &base, ostream &os)
+Time::serialize(const std::string &base, CheckpointOut &cp) const
 {
-    paramOut(os, base + ".sec", sec());
-    paramOut(os, base + ".nsec", nsec());
+    paramOut(cp, base + ".sec", sec());
+    paramOut(cp, base + ".nsec", nsec());
 }
 
 void
-Time::unserialize(const std::string &base, Checkpoint *cp,
-                  const string &section)
+Time::unserialize(const std::string &base, CheckpointIn &cp)
 {
     time_t secs;
     time_t nsecs;
-    paramIn(cp, section, base + ".sec", secs);
-    paramIn(cp, section, base + ".nsec", nsecs);
+    paramIn(cp, base + ".sec", secs);
+    paramIn(cp, base + ".nsec", nsecs);
     sec(secs);
     nsec(nsecs);
 }

@@ -1,6 +1,6 @@
 // -*- mode:c++ -*-
 
-// Copyright (c) 2010-2013 ARM Limited
+// Copyright (c) 2010-2013,2017 ARM Limited
 // All rights reserved
 //
 // The license below extends only to copyright in the software and shall
@@ -130,12 +130,53 @@ let {{
     eretIop = InstObjParams("eret", "Eret", "PredOp",
                            { "code": eretCode,
                              "predicate_test": predicateTest },
-                           ["IsNonSpeculative", "IsSerializeAfter"])
+                           ["IsNonSpeculative", "IsSerializeAfter",
+                            "IsSquashAfter"])
     header_output += BasicDeclare.subst(eretIop)
     decoder_output += BasicConstructor.subst(eretIop)
     exec_output += PredOpExecute.subst(eretIop)
 
+    crcCode = '''
+    constexpr uint8_t size_bytes = %(sz)d;
+    constexpr uint32_t poly = %(polynom)s;
 
+    uint32_t data = htole(Op2);
+    auto data_buffer = reinterpret_cast<uint8_t*>(&data);
+
+    Dest = crc32<poly>(
+        data_buffer,   /* Message Register */
+        Op1,           /* Initial Value  of the CRC */
+        size_bytes     /* Size of the original Message */
+    );
+    '''
+
+    def crc32Emit(mnem, implCode, castagnoli, size):
+        global header_output, decoder_output, exec_output
+
+        if castagnoli:
+            # crc32c instructions
+            poly = "0x1EDC6F41"
+        else:
+            # crc32 instructions
+            poly = "0x04C11DB7"
+
+        data = {'sz' : size, 'polynom': poly}
+
+        instCode = implCode % data
+
+        crcIop = InstObjParams(mnem, mnem.capitalize(), "RegRegRegOp",
+                               { "code": instCode,
+                                 "predicate_test": predicateTest }, [])
+        header_output += RegRegRegOpDeclare.subst(crcIop)
+        decoder_output += RegRegRegOpConstructor.subst(crcIop)
+        exec_output += PredOpExecute.subst(crcIop)
+
+    crc32Emit("crc32b", crcCode, False, 1);
+    crc32Emit("crc32h", crcCode, False, 2);
+    crc32Emit("crc32w", crcCode, False, 4);
+    crc32Emit("crc32cb", crcCode, True, 1);
+    crc32Emit("crc32ch", crcCode, True, 2);
+    crc32Emit("crc32cw", crcCode, True, 4);
 
 }};
 
@@ -328,17 +369,7 @@ let {{
     exec_output += PredOpExecute.subst(revshIop)
 
     rbitCode = '''
-    uint8_t *opBytes = (uint8_t *)&Op1;
-    uint32_t resTemp;
-    uint8_t *destBytes = (uint8_t *)&resTemp;
-    // This reverses the bytes and bits of the input, or so says the
-    // internet.
-    for (int i = 0; i < 4; i++) {
-        uint32_t temp = opBytes[i];
-        temp = (temp * 0x0802 & 0x22110) | (temp * 0x8020 & 0x88440);
-        destBytes[3 - i] = (temp * 0x10101) >> 16;
-    }
-    Dest = resTemp;
+    Dest = reverseBits(Op1);
     '''
     rbitIop = InstObjParams("rbit", "Rbit", "RegRegOp",
                             { "code": rbitCode,
@@ -649,7 +680,8 @@ let {{
     if (SevMailbox == 1) {
         SevMailbox = 0;
         PseudoInst::quiesceSkip(tc);
-    } else if (tc->getCpuPtr()->getInterruptController()->checkInterrupts(tc)) {
+    } else if (tc->getCpuPtr()->getInterruptController(
+                tc->threadId())->checkInterrupts(tc)) {
         PseudoInst::quiesceSkip(tc);
     } else if (cpsr.el == EL0 && !sctlr.ntwe) {
         PseudoInst::quiesceSkip(tc);
@@ -692,8 +724,8 @@ let {{
 
     // WFI doesn't sleep if interrupts are pending (masked or not)
     ThreadContext *tc = xc->tcBase();
-    if (tc->getCpuPtr()->getInterruptController()->checkWfiWake(hcr, cpsr,
-                                                                scr)) {
+    if (tc->getCpuPtr()->getInterruptController(
+                tc->threadId())->checkWfiWake(hcr, cpsr, scr)) {
         PseudoInst::quiesceSkip(tc);
     } else if (cpsr.el == EL0 && !sctlr.ntwi) {
         PseudoInst::quiesceSkip(tc);
@@ -711,7 +743,7 @@ let {{
     } else {
         PseudoInst::quiesce(tc);
     }
-    tc->getCpuPtr()->clearInterrupt(INT_ABT, 0);
+    tc->getCpuPtr()->clearInterrupt(tc->threadId(), INT_ABT, 0);
     '''
     wfiIop = InstObjParams("wfi", "WfiInst", "PredOp", \
             { "code" : wfiCode, "predicate_test" : predicateTest },
@@ -731,7 +763,7 @@ let {{
         // Wake CPU with interrupt if they were sleeping
         if (oc->readMiscReg(MISCREG_SEV_MAILBOX) == 0) {
             // Post Interrupt and wake cpu if needed
-            oc->getCpuPtr()->postInterrupt(INT_SEV, 0);
+            oc->getCpuPtr()->postInterrupt(oc->threadId(), INT_SEV, 0);
         }
     }
     '''
@@ -811,8 +843,11 @@ let {{
     exec_output += PredOpExecute.subst(bfiIop)
 
     mrc14code = '''
-    MiscRegIndex miscReg = (MiscRegIndex) xc->tcBase()->flattenMiscIndex(op1);
-    if (!canReadCoprocReg(miscReg, Scr, Cpsr, xc->tcBase())) {
+    MiscRegIndex miscReg = (MiscRegIndex) xc->tcBase()->flattenRegId(
+                               RegId(MiscRegClass, op1)).index();
+    bool can_read, undefined;
+    std::tie(can_read, undefined) = canReadCoprocReg(miscReg, Scr, Cpsr);
+    if (!can_read || undefined) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -833,8 +868,11 @@ let {{
 
 
     mcr14code = '''
-    MiscRegIndex miscReg = (MiscRegIndex) xc->tcBase()->flattenMiscIndex(dest);
-    if (!canWriteCoprocReg(miscReg, Scr, Cpsr, xc->tcBase())) {
+    MiscRegIndex miscReg = (MiscRegIndex) xc->tcBase()->flattenRegId(
+                               RegId(MiscRegClass, dest)).index();
+    bool can_write, undefined;
+    std::tie(can_write, undefined) = canWriteCoprocReg(miscReg, Scr, Cpsr);
+    if (undefined || !can_write) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -856,15 +894,17 @@ let {{
     mrc15code = '''
     int preFlatOp1 = flattenMiscRegNsBanked(op1, xc->tcBase());
     MiscRegIndex miscReg = (MiscRegIndex)
-                           xc->tcBase()->flattenMiscIndex(preFlatOp1);
+                           xc->tcBase()->flattenRegId(RegId(MiscRegClass,
+                                                      preFlatOp1)).index();
     bool hypTrap = mcrMrc15TrapToHyp(miscReg, Hcr, Cpsr, Scr, Hdcr, Hstr,
                                      Hcptr, imm);
-    bool canRead = canReadCoprocReg(miscReg, Scr, Cpsr, xc->tcBase());
-
+    bool can_read, undefined;
+    std::tie(can_read, undefined) = canReadCoprocReg(miscReg, Scr, Cpsr);
     // if we're in non secure PL1 mode then we can trap regargless of whether
     // the register is accessable, in other modes we trap if only if the register
     // IS accessable.
-    if (!canRead && !(hypTrap && !inUserMode(Cpsr) && !inSecureState(Scr, Cpsr))) {
+    if (undefined || (!can_read && !(hypTrap && !inUserMode(Cpsr) &&
+                                    !inSecureState(Scr, Cpsr)))) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -886,15 +926,18 @@ let {{
     mcr15code = '''
     int preFlatDest = flattenMiscRegNsBanked(dest, xc->tcBase());
     MiscRegIndex miscReg = (MiscRegIndex)
-                       xc->tcBase()->flattenMiscIndex(preFlatDest);
+                       xc->tcBase()->flattenRegId(RegId(MiscRegClass,
+                                                  preFlatDest)).index();
     bool hypTrap  = mcrMrc15TrapToHyp(miscReg, Hcr, Cpsr, Scr, Hdcr, Hstr,
                                       Hcptr, imm);
-    bool canWrite = canWriteCoprocReg(miscReg, Scr, Cpsr, xc->tcBase());
+    bool can_write, undefined;
+    std::tie(can_write, undefined) = canWriteCoprocReg(miscReg, Scr, Cpsr);
 
     // if we're in non secure PL1 mode then we can trap regargless of whether
     // the register is accessable, in other modes we trap if only if the register
     // IS accessable.
-    if (!canWrite & !(hypTrap & !inUserMode(Cpsr) & !inSecureState(Scr, Cpsr))) {
+    if (undefined || (!can_write && !(hypTrap && !inUserMode(Cpsr) &&
+                                      !inSecureState(Scr, Cpsr)))) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -916,14 +959,16 @@ let {{
     mrrc15code = '''
     int preFlatOp1 = flattenMiscRegNsBanked(op1, xc->tcBase());
     MiscRegIndex miscReg = (MiscRegIndex)
-                           xc->tcBase()->flattenMiscIndex(preFlatOp1);
+                           xc->tcBase()->flattenRegId(RegId(MiscRegClass,
+                                                      preFlatOp1)).index();
     bool hypTrap = mcrrMrrc15TrapToHyp(miscReg, Cpsr, Scr, Hstr, Hcr, imm);
-    bool canRead = canReadCoprocReg(miscReg, Scr, Cpsr, xc->tcBase());
-
+    bool can_read, undefined;
+    std::tie(can_read, undefined) = canReadCoprocReg(miscReg, Scr, Cpsr);
     // if we're in non secure PL1 mode then we can trap regargless of whether
     // the register is accessable, in other modes we trap if only if the register
     // IS accessable.
-    if (!canRead && !(hypTrap && !inUserMode(Cpsr) && !inSecureState(Scr, Cpsr))) {
+    if (undefined || (!can_read && !(hypTrap && !inUserMode(Cpsr) &&
+                                     !inSecureState(Scr, Cpsr)))) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -945,14 +990,17 @@ let {{
     mcrr15code = '''
     int preFlatDest = flattenMiscRegNsBanked(dest, xc->tcBase());
     MiscRegIndex miscReg = (MiscRegIndex)
-                           xc->tcBase()->flattenMiscIndex(preFlatDest);
+                           xc->tcBase()->flattenRegId(RegId(MiscRegClass,
+                                                      preFlatDest)).index();
     bool hypTrap  = mcrrMrrc15TrapToHyp(miscReg, Cpsr, Scr, Hstr, Hcr, imm);
-    bool canWrite = canWriteCoprocReg(miscReg, Scr, Cpsr, xc->tcBase());
+    bool can_write, undefined;
+    std::tie(can_write, undefined) = canWriteCoprocReg(miscReg, Scr, Cpsr);
 
     // if we're in non secure PL1 mode then we can trap regargless of whether
     // the register is accessable, in other modes we trap if only if the register
     // IS accessable.
-    if (!canWrite & !(hypTrap & !inUserMode(Cpsr) & !inSecureState(Scr, Cpsr))) {
+    if (undefined || (!can_write && !(hypTrap && !inUserMode(Cpsr) &&
+                                     !inSecureState(Scr, Cpsr)))) {
         return std::make_shared<UndefinedInstruction>(machInst, false,
                                                       mnemonic);
     }
@@ -1015,6 +1063,106 @@ let {{
     decoder_output += BasicConstructor.subst(clrexIop)
     exec_output += PredOpExecute.subst(clrexIop)
 
+    McrDcCheckCode = '''
+        int preFlatDest = flattenMiscRegNsBanked(dest, xc->tcBase());
+        MiscRegIndex miscReg = (MiscRegIndex) xc->tcBase()->flattenRegId(
+            RegId(MiscRegClass, preFlatDest)).index();
+        bool hypTrap  = mcrMrc15TrapToHyp(miscReg, Hcr, Cpsr, Scr, Hdcr, Hstr,
+                                          Hcptr, imm);
+        bool can_write, undefined;
+        std::tie(can_write, undefined) = canWriteCoprocReg(miscReg, Scr, Cpsr);
+
+        // if we're in non secure PL1 mode then we can trap regardless
+        // of whether the register is accessible, in other modes we
+        // trap if only if the register IS accessible.
+        if (undefined || (!can_write & !(hypTrap & !inUserMode(Cpsr) &
+                                         !inSecureState(Scr, Cpsr)))) {
+            return std::make_shared<UndefinedInstruction>(machInst, false,
+                                                          mnemonic);
+        }
+        if (hypTrap) {
+            return std::make_shared<HypervisorTrap>(machInst, imm,
+                                                    EC_TRAPPED_CP15_MCR_MRC);
+        }
+    '''
+
+    McrDcimvacCode = '''
+        const Request::Flags memAccessFlags(ArmISA::TLB::MustBeOne |
+                                            Request::INVALIDATE |
+                                            Request::DST_POC);
+        EA = Op1;
+    '''
+    McrDcimvacIop = InstObjParams("mcr dcimvac", "McrDcimvac",
+                                  "MiscRegRegImmMemOp",
+                                  {"memacc_code": McrDcCheckCode,
+                                   "postacc_code": "",
+                                   "ea_code": McrDcimvacCode,
+                                   "predicate_test": predicateTest},
+                                ['IsMemRef', 'IsStore'])
+    header_output += MiscRegRegImmMemOpDeclare.subst(McrDcimvacIop)
+    decoder_output += MiscRegRegImmOpConstructor.subst(McrDcimvacIop)
+    exec_output += Mcr15Execute.subst(McrDcimvacIop) + \
+                   Mcr15InitiateAcc.subst(McrDcimvacIop) + \
+                   Mcr15CompleteAcc.subst(McrDcimvacIop)
+
+    McrDccmvacCode = '''
+        const Request::Flags memAccessFlags(ArmISA::TLB::MustBeOne |
+                                            Request::CLEAN |
+                                            Request::DST_POC);
+        EA = Op1;
+    '''
+    McrDccmvacIop = InstObjParams("mcr dccmvac", "McrDccmvac",
+                                  "MiscRegRegImmMemOp",
+                                  {"memacc_code": McrDcCheckCode,
+                                   "postacc_code": "",
+                                   "ea_code": McrDccmvacCode,
+                                   "predicate_test": predicateTest},
+                                ['IsMemRef', 'IsStore'])
+    header_output += MiscRegRegImmMemOpDeclare.subst(McrDccmvacIop)
+    decoder_output += MiscRegRegImmOpConstructor.subst(McrDccmvacIop)
+    exec_output += Mcr15Execute.subst(McrDccmvacIop) + \
+                   Mcr15InitiateAcc.subst(McrDccmvacIop) + \
+                   Mcr15CompleteAcc.subst(McrDccmvacIop)
+
+    McrDccmvauCode = '''
+        const Request::Flags memAccessFlags(ArmISA::TLB::MustBeOne |
+                                            Request::CLEAN |
+                                            Request::DST_POU);
+        EA = Op1;
+    '''
+    McrDccmvauIop = InstObjParams("mcr dccmvau", "McrDccmvau",
+                                  "MiscRegRegImmMemOp",
+                                  {"memacc_code": McrDcCheckCode,
+                                   "postacc_code": "",
+                                   "ea_code": McrDccmvauCode,
+                                   "predicate_test": predicateTest},
+                                ['IsMemRef', 'IsStore'])
+    header_output += MiscRegRegImmMemOpDeclare.subst(McrDccmvauIop)
+    decoder_output += MiscRegRegImmOpConstructor.subst(McrDccmvauIop)
+    exec_output += Mcr15Execute.subst(McrDccmvauIop) + \
+                   Mcr15InitiateAcc.subst(McrDccmvauIop) + \
+                   Mcr15CompleteAcc.subst(McrDccmvauIop)
+
+    McrDccimvacCode = '''
+        const Request::Flags memAccessFlags(ArmISA::TLB::MustBeOne |
+                                            Request::CLEAN |
+                                            Request::INVALIDATE |
+                                            Request::DST_POC);
+        EA = Op1;
+    '''
+    McrDccimvacIop = InstObjParams("mcr dccimvac", "McrDccimvac",
+                                  "MiscRegRegImmMemOp",
+                                  {"memacc_code": McrDcCheckCode,
+                                   "postacc_code": "",
+                                   "ea_code": McrDccimvacCode,
+                                   "predicate_test": predicateTest},
+                                ['IsMemRef', 'IsStore'])
+    header_output += MiscRegRegImmMemOpDeclare.subst(McrDccimvacIop)
+    decoder_output += MiscRegRegImmOpConstructor.subst(McrDccimvacIop)
+    exec_output += Mcr15Execute.subst(McrDccimvacIop) + \
+                   Mcr15InitiateAcc.subst(McrDccimvacIop) + \
+                   Mcr15CompleteAcc.subst(McrDccimvacIop)
+
     isbCode = '''
         // If the barrier is due to a CP15 access check for hyp traps
         if ((imm != 0) && mcrMrc15TrapToHyp(MISCREG_CP15ISB, Hcr, Cpsr, Scr,
@@ -1022,12 +1170,11 @@ let {{
             return std::make_shared<HypervisorTrap>(machInst, imm,
                 EC_TRAPPED_CP15_MCR_MRC);
         }
-        fault = std::make_shared<FlushPipe>();
     '''
     isbIop = InstObjParams("isb", "Isb", "ImmOp",
                              {"code": isbCode,
                                "predicate_test": predicateTest},
-                                ['IsSerializeAfter'])
+                                ['IsSerializeAfter', 'IsSquashAfter'])
     header_output += ImmOpDeclare.subst(isbIop)
     decoder_output += ImmOpConstructor.subst(isbIop)
     exec_output += PredOpExecute.subst(isbIop)
@@ -1039,7 +1186,6 @@ let {{
             return std::make_shared<HypervisorTrap>(machInst, imm,
                 EC_TRAPPED_CP15_MCR_MRC);
         }
-        fault = std::make_shared<FlushPipe>();
     '''
     dsbIop = InstObjParams("dsb", "Dsb", "ImmOp",
                              {"code": dsbCode,

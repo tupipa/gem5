@@ -29,10 +29,11 @@
  *          Nathan Binkert
  */
 
+#include "arch/alpha/system.hh"
+
 #include <sys/signal.h>
 
 #include "arch/alpha/ev5.hh"
-#include "arch/alpha/system.hh"
 #include "arch/vtophys.hh"
 #include "base/loader/object_file.hh"
 #include "base/loader/symtab.hh"
@@ -218,17 +219,17 @@ AlphaSystem::setAlphaAccess(Addr access)
 }
 
 void
-AlphaSystem::serializeSymtab(std::ostream &os)
+AlphaSystem::serializeSymtab(CheckpointOut &cp) const
 {
-    consoleSymtab->serialize("console_symtab", os);
-    palSymtab->serialize("pal_symtab", os);
+    consoleSymtab->serialize("console_symtab", cp);
+    palSymtab->serialize("pal_symtab", cp);
 }
 
 void
-AlphaSystem::unserializeSymtab(Checkpoint *cp, const std::string &section)
+AlphaSystem::unserializeSymtab(CheckpointIn &cp)
 {
-    consoleSymtab->unserialize("console_symtab", cp, section);
-    palSymtab->unserialize("pal_symtab", cp, section);
+    consoleSymtab->unserialize("console_symtab", cp);
+    palSymtab->unserialize("pal_symtab", cp);
 }
 
 AlphaSystem *

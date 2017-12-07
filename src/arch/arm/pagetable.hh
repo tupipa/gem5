@@ -61,12 +61,12 @@ struct VAddr
 // ITB/DTB page table entry
 struct PTE
 {
-    void serialize(std::ostream &os)
+    void serialize(CheckpointOut &cp) const
     {
         panic("Need to implement PTE serialization\n");
     }
 
-    void unserialize(Checkpoint *cp, const std::string &section)
+    void unserialize(CheckpointIn &cp)
     {
         panic("Need to implement PTE serialization\n");
     }
@@ -83,7 +83,7 @@ enum LookupLevel {
 };
 
 // ITB/DTB table entry
-struct TlbEntry
+struct TlbEntry : public Serializable
 {
   public:
     enum class MemoryType : std::uint8_t {
@@ -168,7 +168,7 @@ struct TlbEntry
          pfn(0), size(0), vpn(0), attributes(0), lookupLevel(L1), asid(0),
          vmid(0), N(0), innerAttrs(0), outerAttrs(0), ap(0), hap(0x3),
          domain(DomainType::Client), mtype(MemoryType::StronglyOrdered),
-         longDescFormat(false), isHyp(false), global(false), valid(true),
+         longDescFormat(false), isHyp(false), global(false), valid(false),
          ns(true), nstid(true), el(0), nonCacheable(false),
          shareable(false), outerShareable(false), xn(0), pxn(0)
     {
@@ -284,7 +284,7 @@ struct TlbEntry
     }
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
         SERIALIZE_SCALAR(longDescFormat);
         SERIALIZE_SCALAR(pfn);
@@ -311,10 +311,10 @@ struct TlbEntry
         SERIALIZE_SCALAR(ap);
         SERIALIZE_SCALAR(hap);
         uint8_t domain_ = static_cast<uint8_t>(domain);
-        paramOut(os, "domain", domain_);
+        paramOut(cp, "domain", domain_);
     }
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
         UNSERIALIZE_SCALAR(longDescFormat);
         UNSERIALIZE_SCALAR(pfn);
@@ -341,7 +341,7 @@ struct TlbEntry
         UNSERIALIZE_SCALAR(ap);
         UNSERIALIZE_SCALAR(hap);
         uint8_t domain_;
-        paramIn(cp, section, "domain", domain_);
+        paramIn(cp, "domain", domain_);
         domain = static_cast<DomainType>(domain_);
     }
 

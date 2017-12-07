@@ -28,12 +28,13 @@
  * Authors: Kevin Lim
  */
 
+#include "cpu/thread_state.hh"
+
 #include "arch/kernel_stats.hh"
 #include "base/output.hh"
 #include "cpu/base.hh"
 #include "cpu/profile.hh"
 #include "cpu/quiesce_event.hh"
-#include "cpu/thread_state.hh"
 #include "mem/fs_translating_port_proxy.hh"
 #include "mem/port.hh"
 #include "mem/port_proxy.hh"
@@ -63,7 +64,7 @@ ThreadState::~ThreadState()
 }
 
 void
-ThreadState::serialize(std::ostream &os)
+ThreadState::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_ENUM(_status);
     // thread_num and cpu_id are deterministic from the config
@@ -77,11 +78,11 @@ ThreadState::serialize(std::ostream &os)
         quiesceEndTick = quiesceEvent->when();
     SERIALIZE_SCALAR(quiesceEndTick);
     if (kernelStats)
-        kernelStats->serialize(os);
+        kernelStats->serialize(cp);
 }
 
 void
-ThreadState::unserialize(Checkpoint *cp, const std::string &section)
+ThreadState::unserialize(CheckpointIn &cp)
 {
 
     UNSERIALIZE_ENUM(_status);
@@ -96,7 +97,7 @@ ThreadState::unserialize(Checkpoint *cp, const std::string &section)
     if (quiesceEndTick)
         baseCpu->schedule(quiesceEvent, quiesceEndTick);
     if (kernelStats)
-        kernelStats->unserialize(cp, section);
+        kernelStats->unserialize(cp);
 }
 
 void

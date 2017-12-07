@@ -53,11 +53,13 @@
 #include <string>
 #include <type_traits>
 
+#include "base/compiler.hh"
 #include "base/types.hh"
+#include "sim/serialize.hh"
 
 class Checkpoint;
 
-class Random
+class Random : public Serializable
 {
 
   private:
@@ -102,8 +104,8 @@ class Random
         return dist(gen);
     }
 
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 extern Random random_mt;

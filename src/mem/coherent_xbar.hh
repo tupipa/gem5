@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2015 ARM Limited
+ * Copyright (c) 2011-2015, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -51,6 +51,9 @@
 #ifndef __MEM_COHERENT_XBAR_HH__
 #define __MEM_COHERENT_XBAR_HH__
 
+#include <unordered_map>
+#include <unordered_set>
+
 #include "mem/snoop_filter.hh"
 #include "mem/xbar.hh"
 #include "params/CoherentXBar.hh"
@@ -84,7 +87,7 @@ class CoherentXBar : public BaseXBar
      * be instantiated for each of the master ports connecting to the
      * crossbar.
      */
-    class CoherentXBarSlavePort : public SlavePort
+    class CoherentXBarSlavePort : public QueuedSlavePort
     {
 
       private:
@@ -92,11 +95,15 @@ class CoherentXBar : public BaseXBar
         /** A reference to the crossbar to which this port belongs. */
         CoherentXBar &xbar;
 
+        /** A normal packet queue used to store responses. */
+        RespPacketQueue queue;
+
       public:
 
         CoherentXBarSlavePort(const std::string &_name,
                              CoherentXBar &_xbar, PortID _id)
-            : SlavePort(_name, &_xbar, _id), xbar(_xbar)
+            : QueuedSlavePort(_name, &_xbar, queue, _id), xbar(_xbar),
+              queue(_xbar, *this)
         { }
 
       protected:
@@ -124,12 +131,6 @@ class CoherentXBar : public BaseXBar
          */
         virtual void recvFunctional(PacketPtr pkt)
         { xbar.recvFunctional(pkt, id); }
-
-        /**
-         * When receiving a retry, pass it to the crossbar.
-         */
-        virtual void recvRespRetry()
-        { panic("Crossbar slave ports should never retry.\n"); }
 
         /**
          * Return the union of all adress ranges seen by this crossbar.
@@ -215,14 +216,14 @@ class CoherentXBar : public BaseXBar
       private:
 
         /** The port which we mirror internally. */
-        SlavePort& slavePort;
+        QueuedSlavePort& slavePort;
 
       public:
 
         /**
          * Create a snoop response port that mirrors a given slave port.
          */
-        SnoopRespPort(SlavePort& slave_port, CoherentXBar& _xbar) :
+        SnoopRespPort(QueuedSlavePort& slave_port, CoherentXBar& _xbar) :
             MasterPort(slave_port.name() + ".snoopRespPort", &_xbar),
             slavePort(slave_port) { }
 
@@ -253,14 +254,21 @@ class CoherentXBar : public BaseXBar
 
     std::vector<SnoopRespPort*> snoopRespPorts;
 
-    std::vector<SlavePort*> snoopPorts;
+    std::vector<QueuedSlavePort*> snoopPorts;
 
     /**
      * Store the outstanding requests that we are expecting snoop
      * responses from so we can determine which snoop responses we
      * generated and which ones were merely forwarded.
      */
-    m5::hash_set<RequestPtr> outstandingSnoop;
+    std::unordered_set<RequestPtr> outstandingSnoop;
+
+    /**
+     * Store the outstanding cache maintenance that we are expecting
+     * snoop responses from so we can determine when we received all
+     * snoop responses and if any of the agents satisfied the request.
+     */
+    std::unordered_map<PacketId, PacketPtr> outstandingCMO;
 
     /**
      * Keep a pointer to the system to be allow to querying memory system
@@ -274,6 +282,18 @@ class CoherentXBar : public BaseXBar
 
     /** Cycles of snoop response latency.*/
     const Cycles snoopResponseLatency;
+
+    /** Is this crossbar the point of coherency? **/
+    const bool pointOfCoherency;
+
+    /** Is this crossbar the point of unification? **/
+    const bool pointOfUnification;
+
+    /**
+     * Upstream caches need this packet until true is returned, so
+     * hold it for deletion until a subsequent call
+     */
+    std::unique_ptr<Packet> pendingDelete;
 
     /** Function called by the port when the crossbar is recieving a Timing
       request packet.*/
@@ -317,7 +337,7 @@ class CoherentXBar : public BaseXBar
      * @param dests Vector of destination ports for the forwarded pkt
      */
     void forwardTiming(PacketPtr pkt, PortID exclude_slave_port_id,
-                       const std::vector<SlavePort*>& dests);
+                       const std::vector<QueuedSlavePort*>& dests);
 
     /** Function called by the port when the crossbar is recieving a Atomic
       transaction.*/
@@ -340,7 +360,8 @@ class CoherentXBar : public BaseXBar
     std::pair<MemCmd, Tick> forwardAtomic(PacketPtr pkt,
                                           PortID exclude_slave_port_id)
     {
-        return forwardAtomic(pkt, exclude_slave_port_id, InvalidPortID, snoopPorts);
+        return forwardAtomic(pkt, exclude_slave_port_id, InvalidPortID,
+                             snoopPorts);
     }
 
     /**
@@ -358,7 +379,8 @@ class CoherentXBar : public BaseXBar
     std::pair<MemCmd, Tick> forwardAtomic(PacketPtr pkt,
                                           PortID exclude_slave_port_id,
                                           PortID source_master_port_id,
-                                          const std::vector<SlavePort*>& dests);
+                                          const std::vector<QueuedSlavePort*>&
+                                          dests);
 
     /** Function called by the port when the crossbar is recieving a Functional
         transaction.*/
@@ -378,7 +400,37 @@ class CoherentXBar : public BaseXBar
      */
     void forwardFunctional(PacketPtr pkt, PortID exclude_slave_port_id);
 
+    /**
+     * Determine if the crossbar should sink the packet, as opposed to
+     * forwarding it, or responding.
+     */
+    bool sinkPacket(const PacketPtr pkt) const;
+
+    /**
+     * Determine if the crossbar should forward the packet, as opposed to
+     * responding to it.
+     */
+    bool forwardPacket(const PacketPtr pkt);
+
+    /**
+     * Determine if the packet's destination is the memory below
+     *
+     * The memory below is the destination for a cache mainteance
+     * operation to the Point of Coherence/Unification if this is the
+     * Point of Coherence/Unification.
+     *
+     * @param pkt The processed packet
+     *
+     * @return Whether the memory below is the destination for the packet
+     */
+    bool isDestination(const PacketPtr pkt) const
+    {
+        return (pkt->req->isToPOC() && pointOfCoherency) ||
+            (pkt->req->isToPOU() && pointOfUnification);
+    }
+
     Stats::Scalar snoops;
+    Stats::Scalar snoopTraffic;
     Stats::Distribution snoopFanout;
 
   public:
@@ -388,8 +440,6 @@ class CoherentXBar : public BaseXBar
     CoherentXBar(const CoherentXBarParams *p);
 
     virtual ~CoherentXBar();
-
-    unsigned int drain(DrainManager *dm);
 
     virtual void regStats();
 };

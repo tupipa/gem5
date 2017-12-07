@@ -152,7 +152,7 @@
 #include "debug/UFSHostDevice.hh"
 #include "dev/arm/abstract_nvm.hh"
 #include "dev/arm/base_gic.hh"
-#include "dev/disk_image.hh"
+#include "dev/storage/disk_image.hh"
 #include "dev/dma_device.hh"
 #include "dev/io_device.hh"
 #include "mem/packet.hh"
@@ -173,10 +173,10 @@ class UFSHostDevice : public DmaDevice
 
     UFSHostDevice(const UFSHostDeviceParams* p);
 
-    unsigned int drain(DrainManager *dm);
+    DrainState drain() override;
     void checkDrain();
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
   private:
     /**
@@ -823,13 +823,13 @@ class UFSHostDevice : public DmaDevice
     /**
      * Address range functions
      */
-    AddrRangeList getAddrRanges() const;
+    AddrRangeList getAddrRanges() const override;
 
     /**
      * register access functions
      */
-    Tick read(PacketPtr pkt);
-    Tick write(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
+    Tick write(PacketPtr pkt) override;
     // end of access functions
 
     /**
@@ -988,7 +988,7 @@ class UFSHostDevice : public DmaDevice
     void readGarbage();
 
     /**register statistics*/
-    void regStats();
+    void regStats() override;
 
     /**
      * Host controller information
@@ -1051,13 +1051,6 @@ class UFSHostDevice : public DmaDevice
      */
     Tick transactionStart[32];
     Tick idlePhaseStart;
-
-    /**
-     * drain manager
-     * Needed to be able to implement checkpoint functionality
-     */
-
-    DrainManager *drainManager;
 
     /**
      * logic units connected to the UFS Host device
@@ -1136,10 +1129,8 @@ class UFSHostDevice : public DmaDevice
      * because the flow of the events is completely in the control of these
      * classes. (Whereas in the DMA case we rely on an external class)
      */
-    std::deque<EventWrapper<UFSHostDevice, &UFSHostDevice::readDone> >
-    readDoneEvent;
-    std::deque<EventWrapper<UFSHostDevice, &UFSHostDevice::writeDone> >
-    writeDoneEvent;
+    std::deque<EventFunctionWrapper> readDoneEvent;
+    std::deque<EventFunctionWrapper> writeDoneEvent;
 
     /**
      * Callbacks for the logic units. One to indicate the completion of a
@@ -1159,28 +1150,25 @@ class UFSHostDevice : public DmaDevice
     /**
      * Wait for the SCSI specific data to arive
      */
-    EventWrapper<UFSHostDevice, &UFSHostDevice::SCSIStart> SCSIResumeEvent;
+    EventFunctionWrapper SCSIResumeEvent;
 
     /**
      * Wait for the moment where we can send the last frame
      */
-    EventWrapper<UFSHostDevice, &UFSHostDevice::finalUTP> UTPEvent;
+    EventFunctionWrapper UTPEvent;
 
     /**
      * Event after a read to clean up the UTP data structures
      */
-    std::deque<EventWrapper<UFSHostDevice, &UFSHostDevice::readGarbage> >
-    readGarbageEventQueue;
+    std::deque<EventFunctionWrapper> readGarbageEventQueue;
 
     /**
      * Multiple tasks transfers can be scheduled at once for the device, the
      * only thing we know for sure about them is that they will happen in a
      * first come first serve order; hence we need to queue.
      */
-    std::deque<EventWrapper<UFSHostDevice, &UFSHostDevice::taskStart> >
-    taskEventQueue;
-    std::deque<EventWrapper<UFSHostDevice, &UFSHostDevice::transferStart> >
-    transferEventQueue;
+    std::deque<EventFunctionWrapper> taskEventQueue;
+    std::deque<EventFunctionWrapper> transferEventQueue;
 
     /**
      * Bits of interest within UFS data packages

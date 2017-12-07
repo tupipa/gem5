@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 ARM Limited
+ * Copyright (c) 2014, 2016 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -37,9 +37,11 @@
  * Authors: Andreas Sandberg
  */
 
-#include "debug/VIO.hh"
 #include "dev/virtio/base.hh"
+
+#include "debug/VIO.hh"
 #include "params/VirtIODeviceBase.hh"
+#include "params/VirtIODummyDevice.hh"
 
 VirtDescriptor::VirtDescriptor(PortProxy &_memProxy, VirtQueue &_queue,
                                Index descIndex)
@@ -93,7 +95,7 @@ VirtDescriptor::updateChain()
     VirtDescriptor *desc(this);
     do {
         desc->update();
-    } while((desc = desc->next()) != NULL && desc != this);
+    } while ((desc = desc->next()) != NULL && desc != this);
 
     if (desc == this)
         panic("Loop in descriptor chain!\n");
@@ -125,7 +127,7 @@ VirtDescriptor::dumpChain() const
     const VirtDescriptor *desc(this);
     do {
         desc->dump();
-    } while((desc = desc->next()) != NULL);
+    } while ((desc = desc->next()) != NULL);
 }
 
 VirtDescriptor *
@@ -177,7 +179,7 @@ VirtDescriptor::chainRead(size_t offset, uint8_t *dst, size_t size) const
         } else {
             offset -= desc->size();
         }
-    } while((desc = desc->next()) != NULL && desc->isIncoming() && size > 0);
+    } while ((desc = desc->next()) != NULL && desc->isIncoming() && size > 0);
 
     if (size != 0) {
         panic("Failed to read %i bytes from chain of %i bytes @ offset %i\n",
@@ -200,7 +202,7 @@ VirtDescriptor::chainWrite(size_t offset, const uint8_t *src, size_t size)
         } else {
             offset -= desc->size();
         }
-    } while((desc = desc->next()) != NULL && size > 0);
+    } while ((desc = desc->next()) != NULL && size > 0);
 
     if (size != 0) {
         panic("Failed to write %i bytes into chain of %i bytes @ offset %i\n",
@@ -215,7 +217,7 @@ VirtDescriptor::chainSize() const
     const VirtDescriptor *desc(this);
     do {
         size += desc->size();
-    } while((desc = desc->next()) != NULL);
+    } while ((desc = desc->next()) != NULL);
 
     return size;
 }
@@ -233,18 +235,18 @@ VirtQueue::VirtQueue(PortProxy &proxy, uint16_t size)
 }
 
 void
-VirtQueue::serialize(std::ostream &os)
+VirtQueue::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(_address);
     SERIALIZE_SCALAR(_last_avail);
 }
 
 void
-VirtQueue::unserialize(Checkpoint *cp, const std::string &section)
+VirtQueue::unserialize(CheckpointIn &cp)
 {
     Addr addr_in;
 
-    paramIn(cp, section, "_address", addr_in);
+    paramIn(cp, "_address", addr_in);
     UNSERIALIZE_SCALAR(_last_avail);
 
     // Use the address setter to ensure that the ring buffer addresses
@@ -315,7 +317,7 @@ VirtQueue::onNotify()
 
     // Consume all pending descriptors from the input queue.
     VirtDescriptor *d;
-    while((d = consumeDescriptor()) != NULL)
+    while ((d = consumeDescriptor()) != NULL)
         onNotifyDescriptor(d);
 }
 
@@ -336,27 +338,23 @@ VirtIODeviceBase::~VirtIODeviceBase()
 }
 
 void
-VirtIODeviceBase::serialize(std::ostream &os)
+VirtIODeviceBase::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(guestFeatures);
-    paramOut(os, "_deviceStatus", (uint8_t)_deviceStatus);
+    SERIALIZE_SCALAR(_deviceStatus);
     SERIALIZE_SCALAR(_queueSelect);
-    for (QueueID i = 0; i < _queues.size(); ++i) {
-        nameOut(os, csprintf("%s._queues.%i", name(), i));
-        _queues[i]->serialize(os);
-    }
+    for (QueueID i = 0; i < _queues.size(); ++i)
+        _queues[i]->serializeSection(cp, csprintf("_queues.%i", i));
 }
 
 void
-VirtIODeviceBase::unserialize(Checkpoint *cp, const std::string &section)
+VirtIODeviceBase::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(guestFeatures);
-    uint8_t status;
-    paramIn(cp, section, "_deviceStatus", status);
-    _deviceStatus = status;
+    UNSERIALIZE_SCALAR(_deviceStatus);
     UNSERIALIZE_SCALAR(_queueSelect);
     for (QueueID i = 0; i < _queues.size(); ++i)
-        _queues[i]->unserialize(cp, csprintf("%s._queues.%i", section, i));
+        _queues[i]->unserializeSection(cp, csprintf("_queues.%i", i));
 }
 
 void
@@ -479,4 +477,16 @@ void
 VirtIODeviceBase::registerQueue(VirtQueue &queue)
 {
     _queues.push_back(&queue);
+}
+
+
+VirtIODummyDevice::VirtIODummyDevice(VirtIODummyDeviceParams *params)
+    : VirtIODeviceBase(params, ID_INVALID, 0, 0)
+{
+}
+
+VirtIODummyDevice *
+VirtIODummyDeviceParams::create()
+{
+    return new VirtIODummyDevice(this);
 }

@@ -35,12 +35,13 @@
  *          Timothy M. Jones
  */
 
+#include "arch/power/tlb.hh"
+
 #include <string>
 #include <vector>
 
 #include "arch/power/faults.hh"
 #include "arch/power/pagetable.hh"
-#include "arch/power/tlb.hh"
 #include "arch/power/utility.hh"
 #include "base/inifile.hh"
 #include "base/str.hh"
@@ -195,25 +196,25 @@ TLB::flushAll()
 }
 
 void
-TLB::serialize(ostream &os)
+TLB::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(size);
     SERIALIZE_SCALAR(nlu);
 
     for (int i = 0; i < size; i++) {
-        nameOut(os, csprintf("%s.PTE%d", name(), i));
-        table[i].serialize(os);
+        ScopedCheckpointSection sec(cp, csprintf("PTE%d", i));
+        table[i].serialize(cp);
     }
 }
 
 void
-TLB::unserialize(Checkpoint *cp, const string &section)
+TLB::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(size);
     UNSERIALIZE_SCALAR(nlu);
 
     for (int i = 0; i < size; i++) {
-        table[i].unserialize(cp, csprintf("%s.PTE%d", section, i));
+        ScopedCheckpointSection sec(cp, csprintf("PTE%d", i));
         if (table[i].V0 || table[i].V1) {
             lookupTable.insert(make_pair(table[i].VPN, i));
         }
@@ -223,6 +224,8 @@ TLB::unserialize(Checkpoint *cp, const string &section)
 void
 TLB::regStats()
 {
+    BaseTLB::regStats();
+
     read_hits
         .name(name() + ".read_hits")
         .desc("DTB read hits")

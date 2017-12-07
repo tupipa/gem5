@@ -37,24 +37,21 @@
  * Authors: Gabe Black
  */
 
+#include "arch/x86/tlb.hh"
+
 #include <cstring>
 #include <memory>
 
 #include "arch/generic/mmapped_ipr.hh"
+#include "arch/x86/faults.hh"
 #include "arch/x86/insts/microldstop.hh"
+#include "arch/x86/pagetable_walker.hh"
 #include "arch/x86/regs/misc.hh"
 #include "arch/x86/regs/msr.hh"
-#include "arch/x86/faults.hh"
-#include "arch/x86/pagetable.hh"
-#include "arch/x86/pagetable_walker.hh"
-#include "arch/x86/tlb.hh"
 #include "arch/x86/x86_traits.hh"
-#include "base/bitfield.hh"
 #include "base/trace.hh"
-#include "cpu/base.hh"
 #include "cpu/thread_context.hh"
 #include "debug/TLB.hh"
-#include "mem/packet_access.hh"
 #include "mem/page_table.hh"
 #include "mem/request.hh"
 #include "sim/full_system.hh"
@@ -62,13 +59,12 @@
 
 namespace X86ISA {
 
-TLB::TLB(const Params *p) : BaseTLB(p), configAddress(0), size(p->size),
-    lruSeq(0)
+TLB::TLB(const Params *p)
+    : BaseTLB(p), configAddress(0), size(p->size),
+      tlb(size), lruSeq(0)
 {
     if (!size)
         fatal("TLBs must have a non-zero size.\n");
-    tlb = new TlbEntry[size];
-    std::memset(tlb, 0, sizeof(TlbEntry) * size);
 
     for (int x = 0; x < size; x++) {
         tlb[x].trieHandle = NULL;
@@ -235,12 +231,10 @@ TLB::finalizePhysical(RequestPtr req, ThreadContext *tc, Mode mode) const
     AddrRange m5opRange(0xFFFF0000, 0xFFFFFFFF);
 
     if (m5opRange.contains(paddr)) {
-        if (m5opRange.contains(paddr)) {
-            req->setFlags(Request::MMAPPED_IPR | Request::GENERIC_IPR);
-            req->setPaddr(GenericISA::iprAddressPseudoInst(
-                            (paddr >> 8) & 0xFF,
-                            paddr & 0xFF));
-        }
+        req->setFlags(Request::MMAPPED_IPR | Request::GENERIC_IPR |
+                      Request::STRICT_ORDER);
+        req->setPaddr(GenericISA::iprAddressPseudoInst((paddr >> 8) & 0xFF,
+                                                       paddr & 0xFF));
     } else if (FullSystem) {
         // Check for an access to the local APIC
         LocalApicBase localApicBase =
@@ -274,7 +268,7 @@ Fault
 TLB::translate(RequestPtr req, ThreadContext *tc, Translation *translation,
         Mode mode, bool &delayedResponse, bool timing)
 {
-    uint32_t flags = req->getFlags();
+    Request::Flags flags = req->getFlags();
     int seg = flags & SegmentFlagMask;
     bool storeCheck = flags & (StoreCheck << FlagShift);
 
@@ -338,7 +332,20 @@ TLB::translate(RequestPtr req, ThreadContext *tc, Translation *translation,
             DPRINTF(TLB, "Paging enabled.\n");
             // The vaddr already has the segment base applied.
             TlbEntry *entry = lookup(vaddr);
+            if (mode == Read) {
+                rdAccesses++;
+            } else {
+                wrAccesses++;
+            }
             if (!entry) {
+                DPRINTF(TLB, "Handling a TLB miss for "
+                        "address %#x at pc %#x.\n",
+                        vaddr, tc->instAddr());
+                if (mode == Read) {
+                    rdMisses++;
+                } else {
+                    wrMisses++;
+                }
                 if (FullSystem) {
                     Fault fault = walker->start(tc, translation, req, mode);
                     if (timing || fault != NoFault) {
@@ -349,10 +356,6 @@ TLB::translate(RequestPtr req, ThreadContext *tc, Translation *translation,
                     entry = lookup(vaddr);
                     assert(entry);
                 } else {
-                    DPRINTF(TLB, "Handling a TLB miss for "
-                            "address %#x at pc %#x.\n",
-                            vaddr, tc->instAddr());
-
                     Process *p = tc->getProcessPtr();
                     TlbEntry newEntry;
                     bool success = p->pTable->lookup(vaddr, newEntry);
@@ -451,7 +454,30 @@ TLB::getWalker()
 }
 
 void
-TLB::serialize(std::ostream &os)
+TLB::regStats()
+{
+    using namespace Stats;
+
+    rdAccesses
+        .name(name() + ".rdAccesses")
+        .desc("TLB accesses on read requests");
+
+    wrAccesses
+        .name(name() + ".wrAccesses")
+        .desc("TLB accesses on write requests");
+
+    rdMisses
+        .name(name() + ".rdMisses")
+        .desc("TLB misses on read requests");
+
+    wrMisses
+        .name(name() + ".wrMisses")
+        .desc("TLB misses on write requests");
+
+}
+
+void
+TLB::serialize(CheckpointOut &cp) const
 {
     // Only store the entries in use.
     uint32_t _size = size - freeList.size();
@@ -459,18 +485,14 @@ TLB::serialize(std::ostream &os)
     SERIALIZE_SCALAR(lruSeq);
 
     uint32_t _count = 0;
-
     for (uint32_t x = 0; x < size; x++) {
-        if (tlb[x].trieHandle != NULL) {
-            os << "\n[" << csprintf("%s.Entry%d", name(), _count) << "]\n";
-            tlb[x].serialize(os);
-            _count++;
-        }
+        if (tlb[x].trieHandle != NULL)
+            tlb[x].serializeSection(cp, csprintf("Entry%d", _count++));
     }
 }
 
 void
-TLB::unserialize(Checkpoint *cp, const std::string &section)
+TLB::unserialize(CheckpointIn &cp)
 {
     // Do not allow to restore with a smaller tlb.
     uint32_t _size;
@@ -485,7 +507,7 @@ TLB::unserialize(Checkpoint *cp, const std::string &section)
         TlbEntry *newEntry = freeList.front();
         freeList.pop_front();
 
-        newEntry->unserialize(cp, csprintf("%s.Entry%d", name(), x));
+        newEntry->unserializeSection(cp, csprintf("Entry%d", x));
         newEntry->trieHandle = trie.insert(newEntry->vaddr,
             TlbEntryTrie::MaxBits - newEntry->logBytes, newEntry);
     }

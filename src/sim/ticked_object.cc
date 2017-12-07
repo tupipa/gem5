@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 ARM Limited
+ * Copyright (c) 2013-2014, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -39,11 +39,14 @@
 
 #include "sim/ticked_object.hh"
 
+#include "params/TickedObject.hh"
+#include "sim/clocked_object.hh"
+
 Ticked::Ticked(ClockedObject &object_,
     Stats::Scalar *imported_num_cycles,
     Event::Priority priority) :
     object(object_),
-    event(*this, priority),
+    event([this]{ processClockEvent(); }, name(), false, priority),
     running(false),
     lastStopped(0),
     /* Allocate numCycles if an external stat wasn't passed in */
@@ -53,11 +56,21 @@ Ticked::Ticked(ClockedObject &object_,
 { }
 
 void
+Ticked::processClockEvent() {
+    ++tickCycles;
+    ++numCycles;
+    countCycles(Cycles(1));
+    evaluate();
+    if (running)
+        object.schedule(event, object.clockEdge(Cycles(1)));
+}
+
+void
 Ticked::regStats()
 {
     if (numCyclesLocal) {
         numCycles
-            .name(object.name() + ".tickCycles")
+            .name(object.name() + ".totalTickCycles")
             .desc("Number of cycles that the object ticked or was stopped");
     }
 
@@ -72,15 +85,15 @@ Ticked::regStats()
 }
 
 void
-Ticked::serialize(std::ostream &os)
+Ticked::serialize(CheckpointOut &cp) const
 {
     uint64_t lastStoppedUint = lastStopped;
 
-    paramOut(os, "lastStopped", lastStoppedUint);
+    paramOut(cp, "lastStopped", lastStoppedUint);
 }
 
 void
-Ticked::unserialize(Checkpoint *cp, const std::string &section)
+Ticked::unserialize(CheckpointIn &cp)
 {
     uint64_t lastStoppedUint = 0;
 
@@ -90,12 +103,12 @@ Ticked::unserialize(Checkpoint *cp, const std::string &section)
      *  checkpointed object but not this one.
      *  An example would be a CPU model using Ticked restores from a
      *  simple CPU without without Ticked */
-    optParamIn(cp, section, "lastStopped", lastStoppedUint);
+    optParamIn(cp, "lastStopped", lastStoppedUint);
 
     lastStopped = Cycles(lastStoppedUint);
 }
 
-TickedObject::TickedObject(TickedObjectParams *params,
+TickedObject::TickedObject(const TickedObjectParams *params,
     Event::Priority priority) :
     ClockedObject(params),
     /* Make numCycles in Ticked */
@@ -106,17 +119,18 @@ void
 TickedObject::regStats()
 {
     Ticked::regStats();
+    ClockedObject::regStats();
 }
 
 void
-TickedObject::serialize(std::ostream &os)
+TickedObject::serialize(CheckpointOut &cp) const
 {
-    Ticked::serialize(os);
-    ClockedObject::serialize(os);
+    Ticked::serialize(cp);
+    ClockedObject::serialize(cp);
 }
 void
-TickedObject::unserialize(Checkpoint *cp, const std::string &section)
+TickedObject::unserialize(CheckpointIn &cp)
 {
-    Ticked::unserialize(cp, section);
-    ClockedObject::unserialize(cp, section);
+    Ticked::unserialize(cp);
+    ClockedObject::unserialize(cp);
 }

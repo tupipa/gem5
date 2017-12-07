@@ -47,11 +47,10 @@
 #include <vector>
 
 #include "cpu/testers/rubytest/CheckTable.hh"
-#include "mem/ruby/common/Global.hh"
-#include "mem/ruby/common/SubBlock.hh"
-#include "mem/ruby/system/RubyPort.hh"
 #include "mem/mem_object.hh"
 #include "mem/packet.hh"
+#include "mem/ruby/common/SubBlock.hh"
+#include "mem/ruby/common/TypeDefines.hh"
 #include "params/RubyTester.hh"
 
 class RubyTester : public MemObject
@@ -61,6 +60,8 @@ class RubyTester : public MemObject
     {
       private:
         RubyTester *tester;
+        // index for m_last_progress_vector and hitCallback
+        PortID globalIdx;
 
       public:
         //
@@ -69,8 +70,10 @@ class RubyTester : public MemObject
         // RubyPorts that support both types of requests, separate InstOnly
         // and DataOnly CpuPorts will map to that RubyPort
 
-        CpuPort(const std::string &_name, RubyTester *_tester, PortID _id)
-            : MasterPort(_name, _tester, _id), tester(_tester)
+        CpuPort(const std::string &_name, RubyTester *_tester, PortID _id,
+                PortID _index)
+            : MasterPort(_name, _tester, _id), tester(_tester),
+              globalIdx(_index)
         {}
 
       protected:
@@ -83,7 +86,7 @@ class RubyTester : public MemObject
     {
         SubBlock subBlock;
 
-        SenderState(Address addr, int size) : subBlock(addr, size) {}
+        SenderState(Addr addr, int size) : subBlock(addr, size) {}
 
     };
 
@@ -94,7 +97,8 @@ class RubyTester : public MemObject
     virtual BaseMasterPort &getMasterPort(const std::string &if_name,
                                           PortID idx = InvalidPortID);
 
-    bool isInstReadableCpuPort(int idx);
+    bool isInstOnlyCpuPort(int idx);
+    bool isInstDataCpuPort(int idx);
 
     MasterPort* getReadableCpuPort(int idx);
     MasterPort* getWritableCpuPort(int idx);
@@ -114,20 +118,7 @@ class RubyTester : public MemObject
 
     MasterID masterId() { return _masterId; }
   protected:
-    class CheckStartEvent : public Event
-    {
-      private:
-        RubyTester *tester;
-
-      public:
-        CheckStartEvent(RubyTester *_tester)
-            : Event(CPU_Tick_Pri), tester(_tester)
-        {}
-        void process() { tester->wakeup(); }
-        virtual const char *description() const { return "RubyTester tick"; }
-    };
-
-    CheckStartEvent checkStartEvent;
+    EventFunctionWrapper checkStartEvent;
 
     MasterID _masterId;
 
@@ -144,16 +135,17 @@ class RubyTester : public MemObject
     std::vector<Cycles> m_last_progress_vector;
 
     int m_num_cpus;
-    uint64 m_checks_completed;
+    uint64_t m_checks_completed;
     std::vector<MasterPort*> writePorts;
     std::vector<MasterPort*> readPorts;
-    uint64 m_checks_to_complete;
+    uint64_t m_checks_to_complete;
     int m_deadlock_threshold;
     int m_num_writers;
     int m_num_readers;
     int m_wakeup_frequency;
     bool m_check_flush;
-    int m_num_inst_ports;
+    int m_num_inst_only_ports;
+    int m_num_inst_data_ports;
 };
 
 inline std::ostream&

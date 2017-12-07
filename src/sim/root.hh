@@ -60,8 +60,7 @@ class Root : public SimObject
     Time lastTime;
 
     void timeSync();
-    EventWrapper<Root, &Root::timeSync> syncEvent;
-    friend class EventWrapper<Root, &Root::timeSync>;
+    EventFunctionWrapper syncEvent;
 
   public:
     /**
@@ -104,17 +103,11 @@ class Root : public SimObject
 
     Root(Params *p);
 
-    /** Schedule the timesync event at loadState() so that curTick is correct
+    /** Schedule the timesync event at startup().
      */
-    void loadState(Checkpoint *cp);
+    void startup() override;
 
-    /** Schedule the timesync event at initState() when not unserializing
-     */
-    void initState();
-
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
-
+    void serialize(CheckpointOut &cp) const override;
 };
 
 #endif // __SIM_ROOT_HH__

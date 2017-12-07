@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013 ARM Limited
+ * Copyright (c) 2011-2013, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -63,6 +63,7 @@
 #include "sim/full_system.hh"
 #include "sim/insttracer.hh"
 #include "sim/probe/pmu.hh"
+#include "sim/probe/probe.hh"
 #include "sim/system.hh"
 #include "debug/Mwait.hh"
 
@@ -189,7 +190,7 @@ class BaseCPU : public MemObject
      * @return a reference to the port with the given name
      */
     BaseMasterPort &getMasterPort(const std::string &if_name,
-                                  PortID idx = InvalidPortID);
+                                  PortID idx = InvalidPortID) override;
 
     /** Get cpu task id */
     uint32_t taskId() const { return _taskId; }
@@ -207,54 +208,49 @@ class BaseCPU : public MemObject
     TheISA::MicrocodeRom microcodeRom;
 
   protected:
-    TheISA::Interrupts *interrupts;
+    std::vector<TheISA::Interrupts*> interrupts;
 
   public:
     TheISA::Interrupts *
-    getInterruptController()
+    getInterruptController(ThreadID tid)
     {
-        return interrupts;
+        if (interrupts.empty())
+            return NULL;
+
+        assert(interrupts.size() > tid);
+        return interrupts[tid];
     }
 
-    virtual void wakeup() = 0;
+    virtual void wakeup(ThreadID tid) = 0;
 
     void
-    postInterrupt(int int_num, int index)
+    postInterrupt(ThreadID tid, int int_num, int index)
     {
-        interrupts->post(int_num, index);
+        interrupts[tid]->post(int_num, index);
         if (FullSystem)
-            wakeup();
+            wakeup(tid);
     }
 
     void
-    clearInterrupt(int int_num, int index)
+    clearInterrupt(ThreadID tid, int int_num, int index)
     {
-        interrupts->clear(int_num, index);
+        interrupts[tid]->clear(int_num, index);
     }
 
     void
-    clearInterrupts()
+    clearInterrupts(ThreadID tid)
     {
-        interrupts->clearAll();
+        interrupts[tid]->clearAll();
     }
 
     bool
     checkInterrupts(ThreadContext *tc) const
     {
-        return FullSystem && interrupts->checkInterrupts(tc);
+        return FullSystem && interrupts[tc->threadId()]->checkInterrupts(tc);
     }
 
-    class ProfileEvent : public Event
-    {
-      private:
-        BaseCPU *cpu;
-        Tick interval;
-
-      public:
-        ProfileEvent(BaseCPU *cpu, Tick interval);
-        void process();
-    };
-    ProfileEvent *profileEvent;
+    void processProfileEvent();
+    EventFunctionWrapper * profileEvent;
 
   protected:
     std::vector<ThreadContext *> threadContexts;
@@ -263,6 +259,11 @@ class BaseCPU : public MemObject
 
   public:
 
+
+    /** Invalid or unknown Pid. Possible when operating system is not present
+     *  or has not assigned a pid yet */
+    static const uint32_t invldPid = std::numeric_limits<uint32_t>::max();
+
     // Mask to align PCs to MachInst sized boundaries
     static const Addr PCMask = ~((Addr)sizeof(TheISA::MachInst) - 1);
 
@@ -270,13 +271,14 @@ class BaseCPU : public MemObject
     Trace::InstTracer * getTracer() { return tracer; }
 
     /// Notify the CPU that the indicated context is now active.
-    virtual void activateContext(ThreadID thread_num) {}
+    virtual void activateContext(ThreadID thread_num);
 
     /// Notify the CPU that the indicated context is now suspended.
-    virtual void suspendContext(ThreadID thread_num) {}
+    /// Check if possible to enter a lower power state
+    virtual void suspendContext(ThreadID thread_num);
 
     /// Notify the CPU that the indicated context is now halted.
-    virtual void haltContext(ThreadID thread_num) {}
+    virtual void haltContext(ThreadID thread_num);
 
    /// Given a Thread Context pointer return the thread num
    int findContext(ThreadContext *tc);
@@ -287,6 +289,10 @@ class BaseCPU : public MemObject
    /// Get the number of thread contexts available
    unsigned numContexts() { return threadContexts.size(); }
 
+    /// Convert ContextID to threadID
+    ThreadID contextToThread(ContextID cid)
+    { return static_cast<ThreadID>(cid - threadContexts[0]->contextId()); }
+
   public:
     typedef BaseCPUParams Params;
     const Params *params() const
@@ -294,13 +300,18 @@ class BaseCPU : public MemObject
     BaseCPU(Params *params, bool is_checker = false);
     virtual ~BaseCPU();
 
-    virtual void init();
-    virtual void startup();
-    virtual void regStats();
+    void init() override;
+    void startup() override;
+    void regStats() override;
 
-    void regProbePoints() M5_ATTR_OVERRIDE;
+    void regProbePoints() override;
 
     void registerThreadContexts();
+
+    // Functions to deschedule and reschedule the events to enter the
+    // power gating sleep before and after checkpoiting respectively.
+    void deschedulePowerGatingEvent();
+    void schedulePowerGatingEvent();
 
     /**
      * Prepare for another CPU to take over execution.
@@ -390,7 +401,7 @@ class BaseCPU : public MemObject
      *
      * @param os The stream to serialize to.
      */
-    virtual void serialize(std::ostream &os);
+    void serialize(CheckpointOut &cp) const override;
 
     /**
      * Reconstruct the state of this object from a checkpoint.
@@ -403,7 +414,7 @@ class BaseCPU : public MemObject
      * @param cp The checkpoint use.
      * @param section The section name of this object.
      */
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void unserialize(CheckpointIn &cp) override;
 
     /**
      * Serialize a single thread.
@@ -411,7 +422,7 @@ class BaseCPU : public MemObject
      * @param os The stream to serialize to.
      * @param tid ID of the current thread.
      */
-    virtual void serializeThread(std::ostream &os, ThreadID tid) {};
+    virtual void serializeThread(CheckpointOut &cp, ThreadID tid) const {};
 
     /**
      * Unserialize one thread.
@@ -420,8 +431,7 @@ class BaseCPU : public MemObject
      * @param section The section name of this thread.
      * @param tid ID of the current thread.
      */
-    virtual void unserializeThread(Checkpoint *cp, const std::string &section,
-                                   ThreadID tid) {};
+    virtual void unserializeThread(CheckpointIn &cp, ThreadID tid) {};
 
     virtual Counter totalInsts() const = 0;
 
@@ -457,6 +467,15 @@ class BaseCPU : public MemObject
      */
     void scheduleLoadStop(ThreadID tid, Counter loads, const char *cause);
 
+    /**
+     * Get the number of instructions executed by the specified thread
+     * on this CPU. Used by Python to control simulation.
+     *
+     * @param tid Thread monitor
+     * @return Number of instructions executed
+     */
+    uint64_t getCurrentInstCount(ThreadID tid);
+
   public:
     /**
      * @{
@@ -471,6 +490,7 @@ class BaseCPU : public MemObject
      */
     virtual void probeInstCommit(const StaticInstPtr &inst);
 
+   protected:
     /**
      * Helper method to instantiate probe points belonging to this
      * object.
@@ -479,9 +499,6 @@ class BaseCPU : public MemObject
      * @return A unique_ptr to the new probe point.
      */
     ProbePoints::PMUUPtr pmuProbePoint(const char *name);
-
-    /** CPU cycle counter */
-    ProbePoints::PMUUPtr ppCycles;
 
     /**
      * Instruction commit probe point.
@@ -501,9 +518,58 @@ class BaseCPU : public MemObject
     /** Retired branches (any type) */
     ProbePoints::PMUUPtr ppRetiredBranches;
 
+    /** CPU cycle counter even if any thread Context is suspended*/
+    ProbePoints::PMUUPtr ppAllCycles;
+
+    /** CPU cycle counter, only counts if any thread contexts is active **/
+    ProbePoints::PMUUPtr ppActiveCycles;
+
+    /**
+     * ProbePoint that signals transitions of threadContexts sets.
+     * The ProbePoint reports information through it bool parameter.
+     * - If the parameter is true then the last enabled threadContext of the
+     * CPU object was disabled.
+     * - If the parameter is false then a threadContext was enabled, all the
+     * remaining threadContexts are disabled.
+     */
+    ProbePointArg<bool> *ppSleeping;
     /** @} */
 
+    enum CPUState {
+        CPU_STATE_ON,
+        CPU_STATE_SLEEP,
+        CPU_STATE_WAKEUP
+    };
 
+    Cycles previousCycle;
+    CPUState previousState;
+
+    /** base method keeping track of cycle progression **/
+    inline void updateCycleCounters(CPUState state)
+    {
+        uint32_t delta = curCycle() - previousCycle;
+
+        if (previousState == CPU_STATE_ON) {
+            ppActiveCycles->notify(delta);
+        }
+
+        switch (state)
+        {
+          case CPU_STATE_WAKEUP:
+            ppSleeping->notify(false);
+            break;
+          case CPU_STATE_SLEEP:
+            ppSleeping->notify(true);
+            break;
+          default:
+            break;
+        }
+
+        ppAllCycles->notify(delta);
+
+        previousCycle = curCycle();
+        previousState = state;
+    }
 
     // Function tracing
   private:
@@ -555,14 +621,29 @@ class BaseCPU : public MemObject
     Stats::Scalar numWorkItemsCompleted;
 
   private:
-    AddressMonitor addressMonitor;
+    std::vector<AddressMonitor> addressMonitor;
 
   public:
-    void armMonitor(Addr address);
-    bool mwait(PacketPtr pkt);
-    void mwaitAtomic(ThreadContext *tc, TheISA::TLB *dtb);
-    AddressMonitor *getCpuAddrMonitor() { return &addressMonitor; }
-    void atomicNotify(Addr address);
+    void armMonitor(ThreadID tid, Addr address);
+    bool mwait(ThreadID tid, PacketPtr pkt);
+    void mwaitAtomic(ThreadID tid, ThreadContext *tc, TheISA::TLB *dtb);
+    AddressMonitor *getCpuAddrMonitor(ThreadID tid)
+    {
+        assert(tid < numThreads);
+        return &addressMonitor[tid];
+    }
+
+    bool waitForRemoteGDB() const;
+
+    Cycles syscallRetryLatency;
+
+  // Enables CPU to enter power gating on a configurable cycle count
+  protected:
+    void enterPwrGating();
+
+    const Cycles pwrGatingLatency;
+    const bool powerGatingOnIdle;
+    EventFunctionWrapper enterPwrGatingEvent;
 };
 
 #endif // THE_ISA == NULL_ISA

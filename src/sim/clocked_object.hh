@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2013, 2015-2016 ARM Limited
  * Copyright (c) 2013 Cornell University
  * All rights reserved
  *
@@ -37,6 +37,8 @@
  *
  * Authors: Andreas Hansson
  *          Christopher Torng
+ *          Akash Bagdia
+ *          David Guillen Fandos
  */
 
 /**
@@ -47,22 +49,23 @@
 #ifndef __SIM_CLOCKED_OBJECT_HH__
 #define __SIM_CLOCKED_OBJECT_HH__
 
+#include "base/callback.hh"
 #include "base/intmath.hh"
-#include "base/misc.hh"
+#include "enums/PwrState.hh"
 #include "params/ClockedObject.hh"
 #include "sim/core.hh"
 #include "sim/clock_domain.hh"
 #include "sim/sim_object.hh"
 
 /**
- * The ClockedObject class extends the SimObject with a clock and
- * accessor functions to relate ticks to the cycles of the object.
+ * Helper class for objects that need to be clocked. Clocked objects
+ * typically inherit from this class. Objects that need SimObject
+ * functionality as well should inherit from ClockedObject.
  */
-class ClockedObject : public SimObject
+class Clocked
 {
 
   private:
-
     // the tick value of the next clock edge (>= curTick()) at the
     // time of the last call to update()
     mutable Tick tick;
@@ -70,13 +73,6 @@ class ClockedObject : public SimObject
     // The cycle counter value corresponding to the current value of
     // 'tick'
     mutable Cycles cycle;
-
-    /**
-     * Prevent inadvertent use of the copy constructor and assignment
-     * operator by making them private.
-     */
-    ClockedObject(ClockedObject&);
-    ClockedObject& operator=(ClockedObject&);
 
     /**
      *  Align cycle and tick to the next clock edge if not already done. When
@@ -118,18 +114,21 @@ class ClockedObject : public SimObject
      * Create a clocked object and set the clock domain based on the
      * parameters.
      */
-    ClockedObject(const ClockedObjectParams* p) :
-        SimObject(p), tick(0), cycle(0), clockDomain(*p->clk_domain)
+    Clocked(ClockDomain &clk_domain)
+        : tick(0), cycle(0), clockDomain(clk_domain)
     {
         // Register with the clock domain, so that if the clock domain
         // frequency changes, we can update this object's tick.
         clockDomain.registerWithClockDomain(this);
     }
 
+    Clocked(Clocked &) = delete;
+    Clocked &operator=(Clocked &) = delete;
+
     /**
      * Virtual destructor due to inheritance.
      */
-    virtual ~ClockedObject() { }
+    virtual ~Clocked() { }
 
     /**
      * Reset the object's clock using the current global tick value. Likely
@@ -216,9 +215,75 @@ class ClockedObject : public SimObject
         return clockDomain.clockPeriod();
     }
 
+    inline double voltage() const
+    {
+        return clockDomain.voltage();
+    }
+
     inline Cycles ticksToCycles(Tick t) const
     { return Cycles(divCeil(t, clockPeriod())); }
 
+    inline Tick cyclesToTicks(Cycles c) const
+    { return clockPeriod() * c; }
+};
+
+/**
+ * The ClockedObject class extends the SimObject with a clock and
+ * accessor functions to relate ticks to the cycles of the object.
+ */
+class ClockedObject
+    : public SimObject, public Clocked
+{
+  public:
+    ClockedObject(const ClockedObjectParams *p);
+
+    /** Parameters of ClockedObject */
+    typedef ClockedObjectParams Params;
+    const Params* params() const
+    { return reinterpret_cast<const Params*>(_params); }
+
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
+
+    inline Enums::PwrState pwrState() const
+    { return _currPwrState; }
+
+    inline std::string pwrStateName() const
+    { return Enums::PwrStateStrings[_currPwrState]; }
+
+    /** Returns the percentage residency for each power state */
+    std::vector<double> pwrStateWeights() const;
+
+    /**
+     * Record stats values like state residency by computing the time
+     * difference from previous update. Also, updates the previous evaluation
+     * tick once all stats are recorded.
+     * Usually called on power state change and stats dump callback.
+     */
+    void computeStats();
+
+    void pwrState(Enums::PwrState);
+    void regStats() override;
+
+  protected:
+
+    /** To keep track of the current power state */
+    Enums::PwrState _currPwrState;
+
+    Tick prvEvalTick;
+
+    Stats::Scalar numPwrStateTransitions;
+    Stats::Distribution pwrStateClkGateDist;
+    Stats::Vector pwrStateResidencyTicks;
+
+};
+
+class ClockedObjectDumpCallback : public Callback
+{
+    ClockedObject *co;
+  public:
+    ClockedObjectDumpCallback(ClockedObject *co_t) : co(co_t) {}
+    virtual void process() { co->computeStats(); };
 };
 
 #endif //__SIM_CLOCKED_OBJECT_HH__

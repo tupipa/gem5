@@ -31,6 +31,8 @@
  *          Kevin Lim
  */
 
+#include "cpu/simple_thread.hh"
+
 #include <string>
 
 #include "arch/isa_traits.hh"
@@ -45,7 +47,6 @@
 #include "cpu/base.hh"
 #include "cpu/profile.hh"
 #include "cpu/quiesce_event.hh"
-#include "cpu/simple_thread.hh"
 #include "cpu/thread_context.hh"
 #include "mem/fs_translating_port_proxy.hh"
 #include "mem/se_translating_port_proxy.hh"
@@ -69,6 +70,7 @@ SimpleThread::SimpleThread(BaseCPU *_cpu, int _thread_num, System *_sys,
 {
     clearArchRegs();
     tc = new ProxyThreadContext<SimpleThread>(this);
+    quiesceEvent = new EndQuiesceEvent(tc);
 }
 
 SimpleThread::SimpleThread(BaseCPU *_cpu, int _thread_num, System *_sys,
@@ -98,7 +100,7 @@ SimpleThread::SimpleThread(BaseCPU *_cpu, int _thread_num, System *_sys,
     profilePC = 3;
 
     if (use_kernel_stats)
-        kernelStats = new TheISA::Kernel::Statistics(system);
+        kernelStats = new TheISA::Kernel::Statistics();
 }
 
 SimpleThread::~SimpleThread()
@@ -131,18 +133,18 @@ SimpleThread::copyState(ThreadContext *oldContext)
 }
 
 void
-SimpleThread::serialize(ostream &os)
+SimpleThread::serialize(CheckpointOut &cp) const
 {
-    ThreadState::serialize(os);
-    ::serialize(*tc, os);
+    ThreadState::serialize(cp);
+    ::serialize(*tc, cp);
 }
 
 
 void
-SimpleThread::unserialize(Checkpoint *cp, const std::string &section)
+SimpleThread::unserialize(CheckpointIn &cp)
 {
-    ThreadState::unserialize(cp, section);
-    ::unserialize(*tc, cp, section);
+    ThreadState::unserialize(cp);
+    ::unserialize(*tc, cp);
 }
 
 void
@@ -154,9 +156,9 @@ SimpleThread::startup()
 void
 SimpleThread::dumpFuncProfile()
 {
-    std::ostream *os = simout.create(csprintf("profile.%s.dat",
-                                              baseCpu->name()));
-    profile->dump(tc, *os);
+    OutputStream *os(simout.create(csprintf("profile.%s.dat", baseCpu->name())));
+    profile->dump(tc, *os->stream());
+    simout.close(os);
 }
 
 void

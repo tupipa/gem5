@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013 ARM Limited
+ * Copyright (c) 2011-2013, 2016 ARM Limited
  * Copyright (c) 2013 Advanced Micro Devices, Inc.
  * All rights reserved
  *
@@ -53,6 +53,7 @@
 #include <set>
 #include <vector>
 
+#include "arch/generic/types.hh"
 #include "arch/types.hh"
 #include "base/statistics.hh"
 #include "config/the_isa.hh"
@@ -103,6 +104,9 @@ class FullO3CPU : public BaseO3CPU
     typedef typename Impl::DynInstPtr DynInstPtr;
     typedef typename Impl::O3CPU O3CPU;
 
+    using VecElem =  TheISA::VecElem;
+    using VecRegContainer =  TheISA::VecRegContainer;
+
     typedef O3ThreadState<Impl> ImplState;
     typedef O3ThreadState<Impl> Thread;
 
@@ -147,7 +151,6 @@ class FullO3CPU : public BaseO3CPU
         /** Timing version of receive.  Handles setting fetch to the
          * proper status to start fetching. */
         virtual bool recvTimingResp(PacketPtr pkt);
-        virtual void recvTimingSnoopReq(PacketPtr pkt) { }
 
         /** Handles doing a retry of a failed fetch. */
         virtual void recvReqRetry();
@@ -196,24 +199,8 @@ class FullO3CPU : public BaseO3CPU
         virtual bool isSnooping() const { return true; }
     };
 
-    class TickEvent : public Event
-    {
-      private:
-        /** Pointer to the CPU. */
-        FullO3CPU<Impl> *cpu;
-
-      public:
-        /** Constructs a tick event. */
-        TickEvent(FullO3CPU<Impl> *c);
-
-        /** Processes a tick event, calling tick() on the CPU. */
-        void process();
-        /** Returns the description of the tick event. */
-        const char *description() const;
-    };
-
     /** The tick event used for scheduling CPU ticks. */
-    TickEvent tickEvent;
+    EventFunctionWrapper tickEvent;
 
     /** Schedule tick event, regardless of its current state. */
     void scheduleTickEvent(Cycles delay)
@@ -232,7 +219,7 @@ class FullO3CPU : public BaseO3CPU
     }
 
     /**
-     * Check if the pipeline has drained and signal the DrainManager.
+     * Check if the pipeline has drained and signal drain done.
      *
      * This method checks if a drain has been requested and if the CPU
      * has drained successfully (i.e., there are no instructions in
@@ -265,13 +252,13 @@ class FullO3CPU : public BaseO3CPU
     ~FullO3CPU();
 
     /** Registers statistics. */
-    void regStats();
+    void regStats() override;
 
     ProbePointArg<PacketPtr> *ppInstAccessComplete;
     ProbePointArg<std::pair<DynInstPtr, PacketPtr> > *ppDataAccessComplete;
 
     /** Register probe points. */
-    void regProbePoints();
+    void regProbePoints() override;
 
     void demapPage(Addr vaddr, uint64_t asn)
     {
@@ -295,9 +282,9 @@ class FullO3CPU : public BaseO3CPU
     void tick();
 
     /** Initialize the CPU */
-    void init();
+    void init() override;
 
-    void startup();
+    void startup() override;
 
     /** Returns the Number of Active Threads in the CPU */
     int numActiveThreads()
@@ -316,45 +303,43 @@ class FullO3CPU : public BaseO3CPU
     void removeThread(ThreadID tid);
 
     /** Count the Total Instructions Committed in the CPU. */
-    virtual Counter totalInsts() const;
+    Counter totalInsts() const override;
 
     /** Count the Total Ops (including micro ops) committed in the CPU. */
-    virtual Counter totalOps() const;
+    Counter totalOps() const override;
 
     /** Add Thread to Active Threads List. */
-    void activateContext(ThreadID tid);
+    void activateContext(ThreadID tid) override;
 
     /** Remove Thread from Active Threads List */
-    void suspendContext(ThreadID tid);
+    void suspendContext(ThreadID tid) override;
 
     /** Remove Thread from Active Threads List &&
      *  Remove Thread Context from CPU.
      */
-    void haltContext(ThreadID tid);
+    void haltContext(ThreadID tid) override;
 
     /** Update The Order In Which We Process Threads. */
     void updateThreadPriority();
 
     /** Is the CPU draining? */
-    bool isDraining() const { return getDrainState() == Drainable::Draining; }
+    bool isDraining() const { return drainState() == DrainState::Draining; }
 
-    void serializeThread(std::ostream &os, ThreadID tid);
-
-    void unserializeThread(Checkpoint *cp, const std::string &section,
-                           ThreadID tid);
+    void serializeThread(CheckpointOut &cp, ThreadID tid) const override;
+    void unserializeThread(CheckpointIn &cp, ThreadID tid) override;
 
   public:
     /** Executes a syscall.
      * @todo: Determine if this needs to be virtual.
      */
-    void syscall(int64_t callnum, ThreadID tid);
+    void syscall(int64_t callnum, ThreadID tid, Fault *fault);
 
     /** Starts draining the CPU's pipeline of all instructions in
      * order to stop all memory accesses. */
-    unsigned int drain(DrainManager *drain_manager);
+    DrainState drain() override;
 
     /** Resumes execution after a drain. */
-    void drainResume();
+    void drainResume() override;
 
     /**
      * Commit has reached a safe point to drain a thread.
@@ -366,12 +351,12 @@ class FullO3CPU : public BaseO3CPU
     void commitDrained(ThreadID tid);
 
     /** Switches out this CPU. */
-    virtual void switchOut();
+    void switchOut() override;
 
     /** Takes over from another CPU. */
-    virtual void takeOverFrom(BaseCPU *oldCPU);
+    void takeOverFrom(BaseCPU *oldCPU) override;
 
-    void verifyMemoryMode() const;
+    void verifyMemoryMode() const override;
 
     /** Get the current instruction sequence number, and increment it. */
     InstSeqNum getAndIncrementInstSeq()
@@ -394,12 +379,6 @@ class FullO3CPU : public BaseO3CPU
     /** Halts the CPU. */
     void halt() { panic("Halt not implemented!\n"); }
 
-    /** Check if this address is a valid instruction address. */
-    bool validInstAddr(Addr addr) { return true; }
-
-    /** Check if this address is a valid data address. */
-    bool validDataAddr(Addr addr) { return true; }
-
     /** Register accessors.  Index refers to the physical register index. */
 
     /** Reads a miscellaneous register. */
@@ -420,27 +399,99 @@ class FullO3CPU : public BaseO3CPU
     void setMiscReg(int misc_reg, const TheISA::MiscReg &val,
             ThreadID tid);
 
-    uint64_t readIntReg(int reg_idx);
+    uint64_t readIntReg(PhysRegIdPtr phys_reg);
 
-    TheISA::FloatReg readFloatReg(int reg_idx);
+    TheISA::FloatReg readFloatReg(PhysRegIdPtr phys_reg);
 
-    TheISA::FloatRegBits readFloatRegBits(int reg_idx);
+    TheISA::FloatRegBits readFloatRegBits(PhysRegIdPtr phys_reg);
 
-    TheISA::CCReg readCCReg(int reg_idx);
+    const VecRegContainer& readVecReg(PhysRegIdPtr reg_idx) const;
 
-    void setIntReg(int reg_idx, uint64_t val);
+    /**
+     * Read physical vector register for modification.
+     */
+    VecRegContainer& getWritableVecReg(PhysRegIdPtr reg_idx);
 
-    void setFloatReg(int reg_idx, TheISA::FloatReg val);
+    /**
+     * Read physical vector register lane
+     */
+    template<typename VecElem, int LaneIdx>
+    VecLaneT<VecElem, true>
+    readVecLane(PhysRegIdPtr phys_reg) const
+    {
+        vecRegfileReads++;
+        return regFile.readVecLane<VecElem, LaneIdx>(phys_reg);
+    }
 
-    void setFloatRegBits(int reg_idx, TheISA::FloatRegBits val);
+    /**
+     * Read physical vector register lane
+     */
+    template<typename VecElem>
+    VecLaneT<VecElem, true>
+    readVecLane(PhysRegIdPtr phys_reg) const
+    {
+        vecRegfileReads++;
+        return regFile.readVecLane<VecElem>(phys_reg);
+    }
 
-    void setCCReg(int reg_idx, TheISA::CCReg val);
+    /** Write a lane of the destination vector register. */
+    template<typename LD>
+    void
+    setVecLane(PhysRegIdPtr phys_reg, const LD& val)
+    {
+        vecRegfileWrites++;
+        return regFile.setVecLane(phys_reg, val);
+    }
+
+    const VecElem& readVecElem(PhysRegIdPtr reg_idx) const;
+
+    TheISA::CCReg readCCReg(PhysRegIdPtr phys_reg);
+
+    void setIntReg(PhysRegIdPtr phys_reg, uint64_t val);
+
+    void setFloatReg(PhysRegIdPtr phys_reg, TheISA::FloatReg val);
+
+    void setFloatRegBits(PhysRegIdPtr phys_reg, TheISA::FloatRegBits val);
+
+    void setVecReg(PhysRegIdPtr reg_idx, const VecRegContainer& val);
+
+    void setVecElem(PhysRegIdPtr reg_idx, const VecElem& val);
+
+    void setCCReg(PhysRegIdPtr phys_reg, TheISA::CCReg val);
 
     uint64_t readArchIntReg(int reg_idx, ThreadID tid);
 
     float readArchFloatReg(int reg_idx, ThreadID tid);
 
     uint64_t readArchFloatRegInt(int reg_idx, ThreadID tid);
+
+    const VecRegContainer& readArchVecReg(int reg_idx, ThreadID tid) const;
+    /** Read architectural vector register for modification. */
+    VecRegContainer& getWritableArchVecReg(int reg_idx, ThreadID tid);
+
+    /** Read architectural vector register lane. */
+    template<typename VecElem>
+    VecLaneT<VecElem, true>
+    readArchVecLane(int reg_idx, int lId, ThreadID tid) const
+    {
+        PhysRegIdPtr phys_reg = commitRenameMap[tid].lookup(
+                    RegId(VecRegClass, reg_idx));
+        return readVecLane<VecElem>(phys_reg);
+    }
+
+
+    /** Write a lane of the destination vector register. */
+    template<typename LD>
+    void
+    setArchVecLane(int reg_idx, int lId, ThreadID tid, const LD& val)
+    {
+        PhysRegIdPtr phys_reg = commitRenameMap[tid].lookup(
+                    RegId(VecRegClass, reg_idx));
+        setVecLane(phys_reg, val);
+    }
+
+    const VecElem& readArchVecElem(const RegIndex& reg_idx,
+                                   const ElemIndex& ldx, ThreadID tid) const;
 
     TheISA::CCReg readArchCCReg(int reg_idx, ThreadID tid);
 
@@ -454,6 +505,11 @@ class FullO3CPU : public BaseO3CPU
     void setArchFloatReg(int reg_idx, float val, ThreadID tid);
 
     void setArchFloatRegInt(int reg_idx, uint64_t val, ThreadID tid);
+
+    void setArchVecReg(int reg_idx, const VecRegContainer& val, ThreadID tid);
+
+    void setArchVecElem(const RegIndex& reg_idx, const ElemIndex& ldx,
+                        const VecElem& val, ThreadID tid);
 
     void setArchCCReg(int reg_idx, TheISA::CCReg val, ThreadID tid);
 
@@ -549,6 +605,9 @@ class FullO3CPU : public BaseO3CPU
     /** The commit stage. */
     typename CPUPolicy::Commit commit;
 
+    /** The rename mode of the vector registers */
+    Enums::VecRegRenameMode vecMode;
+
     /** The register file. */
     PhysRegFile regFile;
 
@@ -641,7 +700,7 @@ class FullO3CPU : public BaseO3CPU
     /** Wakes the CPU, rescheduling the CPU if it's not already active. */
     void wakeCPU();
 
-    virtual void wakeup();
+    virtual void wakeup(ThreadID tid) override;
 
     /** Gets a free thread id. Use if thread ids change across system. */
     ThreadID getFreeTid();
@@ -666,9 +725,6 @@ class FullO3CPU : public BaseO3CPU
     /** Pointer to the system. */
     System *system;
 
-    /** DrainManager to notify when draining has completed. */
-    DrainManager *drainManager;
-
     /** Pointers to all of the threads in the CPU. */
     std::vector<Thread *> thread;
 
@@ -689,10 +745,9 @@ class FullO3CPU : public BaseO3CPU
 
     /** CPU read function, forwards read to LSQ. */
     Fault read(RequestPtr &req, RequestPtr &sreqLow, RequestPtr &sreqHigh,
-               uint8_t *data, int load_idx)
+               int load_idx)
     {
-        return this->iew.ldstQueue.read(req, sreqLow, sreqHigh,
-                                        data, load_idx);
+        return this->iew.ldstQueue.read(req, sreqLow, sreqHigh, load_idx);
     }
 
     /** CPU write function, forwards write to LSQ. */
@@ -704,10 +759,10 @@ class FullO3CPU : public BaseO3CPU
     }
 
     /** Used by the fetch unit to get a hold of the instruction port. */
-    virtual MasterPort &getInstPort() { return icachePort; }
+    MasterPort &getInstPort() override { return icachePort; }
 
     /** Get the dcache port (used to find block size for translations). */
-    virtual MasterPort &getDataPort() { return dcachePort; }
+    MasterPort &getDataPort() override { return dcachePort; }
 
     /** Stat for total number of times the CPU is descheduled. */
     Stats::Scalar timesIdled;
@@ -735,6 +790,9 @@ class FullO3CPU : public BaseO3CPU
     //number of float register file accesses
     Stats::Scalar fpRegfileReads;
     Stats::Scalar fpRegfileWrites;
+    //number of vector register file accesses
+    mutable Stats::Scalar vecRegfileReads;
+    Stats::Scalar vecRegfileWrites;
     //number of CC register file accesses
     Stats::Scalar ccRegfileReads;
     Stats::Scalar ccRegfileWrites;

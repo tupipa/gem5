@@ -34,6 +34,8 @@
  * Malta I/O including PIC, PIT, RTC, DMA
  */
 
+#include "dev/mips/malta_io.hh"
+
 #include <sys/time.h>
 
 #include <deque>
@@ -46,7 +48,6 @@
 #include "debug/Malta.hh"
 #include "dev/mips/malta.hh"
 #include "dev/mips/malta_cchip.hh"
-#include "dev/mips/malta_io.hh"
 #include "dev/mips/maltareg.h"
 #include "dev/rtcreg.h"
 #include "mem/packet.hh"
@@ -111,7 +112,7 @@ MaltaIO::clearIntr(uint8_t interrupt)
 }
 
 void
-MaltaIO::serialize(ostream &os)
+MaltaIO::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(timerData);
     SERIALIZE_SCALAR(mask1);
@@ -122,12 +123,12 @@ MaltaIO::serialize(ostream &os)
     SERIALIZE_SCALAR(picInterrupting);
 
     // Serialize the timers
-    pitimer.serialize("pitimer", os);
-    rtc.serialize("rtc", os);
+    pitimer.serialize("pitimer", cp);
+    rtc.serialize("rtc", cp);
 }
 
 void
-MaltaIO::unserialize(Checkpoint *cp, const string &section)
+MaltaIO::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(timerData);
     UNSERIALIZE_SCALAR(mask1);
@@ -138,8 +139,8 @@ MaltaIO::unserialize(Checkpoint *cp, const string &section)
     UNSERIALIZE_SCALAR(picInterrupting);
 
     // Unserialize the timers
-    pitimer.unserialize("pitimer", cp, section);
-    rtc.unserialize("rtc", cp, section);
+    pitimer.unserialize("pitimer", cp);
+    rtc.unserialize("rtc", cp);
 }
 
 void

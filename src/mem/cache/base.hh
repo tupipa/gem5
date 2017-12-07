@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, 2015 ARM Limited
+ * Copyright (c) 2012-2013, 2015-2016 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -47,21 +47,22 @@
  * Declares a basic cache interface BaseCache.
  */
 
-#ifndef __BASE_CACHE_HH__
-#define __BASE_CACHE_HH__
+#ifndef __MEM_CACHE_BASE_HH__
+#define __MEM_CACHE_BASE_HH__
 
 #include <algorithm>
 #include <list>
 #include <string>
 #include <vector>
 
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/statistics.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/Cache.hh"
 #include "debug/CachePort.hh"
 #include "mem/cache/mshr_queue.hh"
+#include "mem/cache/write_queue.hh"
 #include "mem/mem_object.hh"
 #include "mem/packet.hh"
 #include "mem/qport.hh"
@@ -72,12 +73,12 @@
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
-class MSHR;
 /**
  * A basic cache interface. Implements some common functions for speed.
  */
 class BaseCache : public MemObject
 {
+  protected:
     /**
      * Indexes to enumerate the MSHR queues.
      */
@@ -97,16 +98,6 @@ class BaseCache : public MemObject
         NUM_BLOCKED_CAUSES
     };
 
-    /**
-     * Reasons for cache to request a bus.
-     */
-    enum RequestCause {
-        Request_MSHR = MSHRQueue_MSHRs,
-        Request_WB = MSHRQueue_WriteBuffer,
-        Request_PF,
-        NUM_REQUEST_CAUSES
-    };
-
   protected:
 
     /**
@@ -114,7 +105,7 @@ class BaseCache : public MemObject
      * cache, and in addition to the basic timing port that only sends
      * response packets through a transmit list, it also offers the
      * ability to schedule and send request packets (requests &
-     * writebacks). The send event is scheduled through requestBus,
+     * writebacks). The send event is scheduled through schedSendEvent,
      * and the sendDeferredPacket of the timing port is modified to
      * consider both the transmit list and the requests from the MSHR.
      */
@@ -127,10 +118,9 @@ class BaseCache : public MemObject
          * Schedule a send of a request packet (from the MSHR). Note
          * that we could already have a retry outstanding.
          */
-        void requestBus(RequestCause cause, Tick time)
+        void schedSendEvent(Tick time)
         {
-            DPRINTF(CachePort, "Scheduling request at %llu due to %d\n",
-                    time, cause);
+            DPRINTF(CachePort, "Scheduling send event at %llu\n", time);
             reqQueue.schedSendEvent(time);
         }
 
@@ -187,8 +177,7 @@ class BaseCache : public MemObject
 
         void processSendRetry();
 
-        EventWrapper<CacheSlavePort,
-                     &CacheSlavePort::processSendRetry> sendRetryEvent;
+        EventFunctionWrapper sendRetryEvent;
 
     };
 
@@ -201,52 +190,45 @@ class BaseCache : public MemObject
     MSHRQueue mshrQueue;
 
     /** Write/writeback buffer */
-    MSHRQueue writeBuffer;
+    WriteQueue writeBuffer;
 
     /**
-     * Allocate a buffer, passing the time indicating when schedule an
-     * event to the queued port to go and ask the MSHR and write queue
-     * if they have packets to send.
-     *
-     * allocateBufferInternal() function is called in:
-     * - MSHR allocateWriteBuffer (unchached write forwarded to WriteBuffer);
-     * - MSHR allocateMissBuffer (miss in MSHR queue);
+     * Mark a request as in service (sent downstream in the memory
+     * system), effectively making this MSHR the ordering point.
      */
-    MSHR *allocateBufferInternal(MSHRQueue *mq, Addr addr, int size,
-                                 PacketPtr pkt, Tick time, bool requestBus)
+    void markInService(MSHR *mshr, bool pending_modified_resp)
     {
-        // check that the address is block aligned since we rely on
-        // this in a number of places when checking for matches and
-        // overlap
-        assert(addr == blockAlign(addr));
+        bool wasFull = mshrQueue.isFull();
+        mshrQueue.markInService(mshr, pending_modified_resp);
 
-        MSHR *mshr = mq->allocate(addr, size, pkt, time, order++);
-
-        if (mq->isFull()) {
-            setBlocked((BlockedCause)mq->index);
+        if (wasFull && !mshrQueue.isFull()) {
+            clearBlocked(Blocked_NoMSHRs);
         }
-
-        if (requestBus) {
-            requestMemSideBus((RequestCause)mq->index, time);
-        }
-
-        return mshr;
     }
 
-    void markInServiceInternal(MSHR *mshr, bool pending_dirty_resp)
+    void markInService(WriteQueueEntry *entry)
     {
-        MSHRQueue *mq = mshr->queue;
-        bool wasFull = mq->isFull();
-        mq->markInService(mshr, pending_dirty_resp);
-        if (wasFull && !mq->isFull()) {
-            clearBlocked((BlockedCause)mq->index);
+        bool wasFull = writeBuffer.isFull();
+        writeBuffer.markInService(entry);
+
+        if (wasFull && !writeBuffer.isFull()) {
+            clearBlocked(Blocked_NoWBBuffers);
         }
     }
+
+    /**
+     * Determine if we should allocate on a fill or not.
+     *
+     * @param cmd Packet command being added as an MSHR target
+     *
+     * @return Whether we should allocate on a fill or not
+     */
+    virtual bool allocOnFill(MemCmd cmd) const = 0;
 
     /**
      * Write back dirty blocks in the cache using functional accesses.
      */
-    virtual void memWriteback() = 0;
+    virtual void memWriteback() override = 0;
     /**
      * Invalidates all blocks in the cache.
      *
@@ -254,7 +236,7 @@ class BaseCache : public MemObject
      * memory. Make sure to call functionalWriteback() first if you
      * want the to write them to memory.
      */
-    virtual void memInvalidate() = 0;
+    virtual void memInvalidate() override = 0;
     /**
      * Determine if there are any dirty blocks in the cache.
      *
@@ -282,6 +264,12 @@ class BaseCache : public MemObject
     const Cycles lookupLatency;
 
     /**
+     * The latency of data access of a cache. It occurs when there is
+     * an access to the cache.
+     */
+    const Cycles dataLatency;
+
+    /**
      * This is the forward latency of the cache. It occurs when there
      * is a cache miss and a request is forwarded downstream, in
      * particular an outbound miss.
@@ -302,12 +290,15 @@ class BaseCache : public MemObject
     const int numTarget;
 
     /** Do we forward snoops from mem side port through to cpu side port? */
-    const bool forwardSnoops;
+    bool forwardSnoops;
 
-    /** Is this cache a toplevel cache (e.g. L1, I/O cache). If so we should
-     * never try to forward ownership and similar optimizations to the cpu
-     * side */
-    const bool isTopLevel;
+    /**
+     * Is this cache read only, for example the instruction cache, or
+     * table-walker cache. A cache that is read only should never see
+     * any writes, and should never get any dirty data (and hence
+     * never have to do any writebacks).
+     */
+    const bool isReadOnly;
 
     /**
      * Bit vector of the blocking reasons for the access path.
@@ -342,14 +333,16 @@ class BaseCache : public MemObject
      * @{
      */
 
-    /** Number of hits per thread for each type of command. @sa Packet::Command */
+    /** Number of hits per thread for each type of command.
+        @sa Packet::Command */
     Stats::Vector hits[MemCmd::NUM_MEM_CMDS];
     /** Number of hits for demand accesses. */
     Stats::Formula demandHits;
     /** Number of hit for all accesses. */
     Stats::Formula overallHits;
 
-    /** Number of misses per thread for each type of command. @sa Packet::Command */
+    /** Number of misses per thread for each type of command.
+        @sa Packet::Command */
     Stats::Vector misses[MemCmd::NUM_MEM_CMDS];
     /** Number of misses for demand accesses. */
     Stats::Formula demandMisses;
@@ -395,11 +388,8 @@ class BaseCache : public MemObject
     /** The average number of cycles blocked for each blocked cause. */
     Stats::Formula avg_blocked;
 
-    /** The number of fast writes (WH64) performed. */
-    Stats::Scalar fastWrites;
-
-    /** The number of cache copies performed. */
-    Stats::Scalar cacheCopies;
+    /** The number of times a HW-prefetched block is evicted w/o reference. */
+    Stats::Scalar unusedPrefetches;
 
     /** Number of blocks written back per thread. */
     Stats::Vector writebacks;
@@ -463,13 +453,6 @@ class BaseCache : public MemObject
     /** The average overall latency of an MSHR miss. */
     Stats::Formula overallAvgMshrUncacheableLatency;
 
-    /** The number of times a thread hit its MSHR cap. */
-    Stats::Vector mshr_cap_events;
-    /** The number of times software prefetches caused the MSHR to block. */
-    Stats::Vector soft_prefetch_mshr_full;
-
-    Stats::Scalar mshr_no_allocate_misses;
-
     /**
      * @}
      */
@@ -477,19 +460,18 @@ class BaseCache : public MemObject
     /**
      * Register stats for this object.
      */
-    virtual void regStats();
+    virtual void regStats() override;
 
   public:
-    typedef BaseCacheParams Params;
-    BaseCache(const Params *p);
+    BaseCache(const BaseCacheParams *p, unsigned blk_size);
     ~BaseCache() {}
 
-    virtual void init();
+    virtual void init() override;
 
     virtual BaseMasterPort &getMasterPort(const std::string &if_name,
-                                          PortID idx = InvalidPortID);
+                                          PortID idx = InvalidPortID) override;
     virtual BaseSlavePort &getSlavePort(const std::string &if_name,
-                                        PortID idx = InvalidPortID);
+                                        PortID idx = InvalidPortID) override;
 
     /**
      * Query block size of a cache.
@@ -501,25 +483,47 @@ class BaseCache : public MemObject
         return blkSize;
     }
 
-
-    Addr blockAlign(Addr addr) const { return (addr & ~(Addr(blkSize - 1))); }
-
-
     const AddrRangeList &getAddrRanges() const { return addrRanges; }
 
-    MSHR *allocateMissBuffer(PacketPtr pkt, Tick time, bool requestBus)
+    MSHR *allocateMissBuffer(PacketPtr pkt, Tick time, bool sched_send = true)
     {
-        return allocateBufferInternal(&mshrQueue,
-                                      blockAlign(pkt->getAddr()), blkSize,
-                                      pkt, time, requestBus);
+        MSHR *mshr = mshrQueue.allocate(pkt->getBlockAddr(blkSize), blkSize,
+                                        pkt, time, order++,
+                                        allocOnFill(pkt->cmd));
+
+        if (mshrQueue.isFull()) {
+            setBlocked((BlockedCause)MSHRQueue_MSHRs);
+        }
+
+        if (sched_send) {
+            // schedule the send
+            schedMemSideSendEvent(time);
+        }
+
+        return mshr;
     }
 
-    MSHR *allocateWriteBuffer(PacketPtr pkt, Tick time, bool requestBus)
+    void allocateWriteBuffer(PacketPtr pkt, Tick time)
     {
-        assert(pkt->isWrite() && !pkt->isRead());
-        return allocateBufferInternal(&writeBuffer,
-                                      blockAlign(pkt->getAddr()), blkSize,
-                                      pkt, time, requestBus);
+        // should only see writes or clean evicts here
+        assert(pkt->isWrite() || pkt->cmd == MemCmd::CleanEvict);
+
+        Addr blk_addr = pkt->getBlockAddr(blkSize);
+
+        WriteQueueEntry *wq_entry =
+            writeBuffer.findMatch(blk_addr, pkt->isSecure());
+        if (wq_entry && !wq_entry->inService) {
+            DPRINTF(Cache, "Potential to merge writeback %s", pkt->print());
+        }
+
+        writeBuffer.allocate(blk_addr, blkSize, pkt, time, order++);
+
+        if (writeBuffer.isFull()) {
+            setBlocked((BlockedCause)MSHRQueue_WriteBuffer);
+        }
+
+        // schedule the send
+        schedMemSideSendEvent(time);
     }
 
     /**
@@ -566,29 +570,17 @@ class BaseCache : public MemObject
     }
 
     /**
-     * Request the master bus for the given cause and time.
-     * @param cause The reason for the request.
-     * @param time The time to make the request.
+     * Schedule a send event for the memory-side port. If already
+     * scheduled, this may reschedule the event at an earlier
+     * time. When the specified time is reached, the port is free to
+     * send either a response, a request, or a prefetch request.
+     *
+     * @param time The time when to attempt sending a packet.
      */
-    void requestMemSideBus(RequestCause cause, Tick time)
+    void schedMemSideSendEvent(Tick time)
     {
-        memSidePort->requestBus(cause, time);
+        memSidePort->schedSendEvent(time);
     }
-
-    /**
-     * Clear the master bus request for the given cause.
-     * @param cause The request reason to clear.
-     */
-    void deassertMemSideBusRequest(RequestCause cause)
-    {
-        // Obsolete... we no longer signal bus requests explicitly so
-        // we can't deassert them.  Leaving this in as a no-op since
-        // the prefetcher calls it to indicate that it no longer wants
-        // to request a prefetch, and someday that might be
-        // interesting again.
-    }
-
-    virtual unsigned int drain(DrainManager *dm);
 
     virtual bool inCache(Addr addr, bool is_secure) const = 0;
 
@@ -614,4 +606,4 @@ class BaseCache : public MemObject
 
 };
 
-#endif //__BASE_CACHE_HH__
+#endif //__MEM_CACHE_BASE_HH__

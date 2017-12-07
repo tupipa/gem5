@@ -32,12 +32,13 @@
 #define __ARCH_X86_DECODER_HH__
 
 #include <cassert>
+#include <unordered_map>
 #include <vector>
 
 #include "arch/x86/regs/misc.hh"
 #include "arch/x86/types.hh"
 #include "base/bitfield.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "cpu/decode_cache.hh"
@@ -47,6 +48,7 @@
 namespace X86ISA
 {
 
+class ISA;
 class Decoder
 {
   private:
@@ -64,6 +66,7 @@ class Decoder
     static ByteTable ImmediateTypeTwoByte;
     static ByteTable ImmediateTypeThreeByte0F38;
     static ByteTable ImmediateTypeThreeByte0F3A;
+    static ByteTable ImmediateTypeVex[10];
 
   protected:
     struct InstBytes
@@ -175,6 +178,10 @@ class Decoder
         ResetState,
         FromCacheState,
         PrefixState,
+        Vex2Of2State,
+        Vex2Of3State,
+        Vex3Of3State,
+        VexOpcodeState,
         OneByteOpcodeState,
         TwoByteOpcodeState,
         ThreeByte0F38OpcodeState,
@@ -193,6 +200,10 @@ class Decoder
     State doResetState();
     State doFromCacheState();
     State doPrefixState(uint8_t);
+    State doVex2Of2State(uint8_t);
+    State doVex2Of3State(uint8_t);
+    State doVex3Of3State(uint8_t);
+    State doVexOpcodeState(uint8_t);
     State doOneByteOpcodeState(uint8_t);
     State doTwoByteOpcodeState(uint8_t);
     State doThreeByte0F38OpcodeState(uint8_t);
@@ -205,6 +216,8 @@ class Decoder
     //Process the actual opcode found earlier, using the supplied tables.
     State processOpcode(ByteTable &immTable, ByteTable &modrmTable,
                         bool addrSizedImm = false);
+    // Process the opcode found with VEX / XOP prefix.
+    State processExtendedOpcode(ByteTable &immTable);
 
   protected:
     /// Caching for decoded instruction objects.
@@ -213,15 +226,15 @@ class Decoder
 
     typedef DecodeCache::AddrMap<Decoder::InstBytes> DecodePages;
     DecodePages *decodePages;
-    typedef m5::hash_map<CacheKey, DecodePages *> AddrCacheMap;
+    typedef std::unordered_map<CacheKey, DecodePages *> AddrCacheMap;
     AddrCacheMap addrCacheMap;
 
     DecodeCache::InstMap *instMap;
-    typedef m5::hash_map<CacheKey, DecodeCache::InstMap *> InstCacheMap;
+    typedef std::unordered_map<CacheKey, DecodeCache::InstMap *> InstCacheMap;
     static InstCacheMap instCacheMap;
 
   public:
-    Decoder() : basePC(0), origPC(0), offset(0),
+    Decoder(ISA* isa = nullptr) : basePC(0), origPC(0), offset(0),
         outOfBytes(true), instDone(false),
         state(ResetState)
     {

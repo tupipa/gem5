@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2015 ARM Limited
+ * Copyright (c) 2013, 2015, 2017 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -66,7 +66,7 @@ SystemCounter::setFreq(uint32_t freq)
 }
 
 void
-SystemCounter::serialize(std::ostream &os) const
+SystemCounter::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(_regCntkctl);
     SERIALIZE_SCALAR(_freq);
@@ -75,8 +75,7 @@ SystemCounter::serialize(std::ostream &os) const
 }
 
 void
-SystemCounter::unserialize(Checkpoint *cp,
-                           const std::string &section)
+SystemCounter::unserialize(CheckpointIn &cp)
 {
     // We didn't handle CNTKCTL in this class before, assume it's zero
     // if it isn't present.
@@ -96,7 +95,7 @@ ArchTimer::ArchTimer(const std::string &name,
     : _name(name), _parent(parent), _systemCounter(sysctr),
       _interrupt(interrupt),
       _control(0), _counterLimit(0), _offset(0),
-      _counterLimitReachedEvent(this)
+      _counterLimitReachedEvent([this]{ counterLimitReached(); }, name)
 {
 }
 
@@ -110,8 +109,12 @@ ArchTimer::counterLimitReached()
 
     DPRINTF(Timer, "Counter limit reached\n");
     if (!_control.imask) {
-        DPRINTF(Timer, "Causing interrupt\n");
-        _interrupt.send();
+        if (scheduleEvents()) {
+            DPRINTF(Timer, "Causing interrupt\n");
+            _interrupt.send();
+        } else {
+            DPRINTF(Timer, "Kvm mode; skipping simulated interrupt\n");
+        }
     }
 }
 
@@ -123,10 +126,12 @@ ArchTimer::updateCounter()
     if (value() >= _counterLimit) {
         counterLimitReached();
     } else {
-        const auto period(_systemCounter.period());
         _control.istatus = 0;
-        _parent.schedule(_counterLimitReachedEvent,
-             curTick() + (_counterLimit - value()) * period);
+        if (scheduleEvents()) {
+            const auto period(_systemCounter.period());
+            _parent.schedule(_counterLimitReachedEvent,
+                 curTick() + (_counterLimit - value()) * period);
+        }
     }
 }
 
@@ -175,37 +180,40 @@ ArchTimer::value() const
 }
 
 void
-ArchTimer::serialize(std::ostream &os) const
+ArchTimer::serialize(CheckpointOut &cp) const
 {
-    paramOut(os, "control_serial", _control);
+    paramOut(cp, "control_serial", _control);
     SERIALIZE_SCALAR(_counterLimit);
     SERIALIZE_SCALAR(_offset);
-
-    const bool event_scheduled(_counterLimitReachedEvent.scheduled());
-    SERIALIZE_SCALAR(event_scheduled);
-    if (event_scheduled) {
-        const Tick event_time(_counterLimitReachedEvent.when());
-        SERIALIZE_SCALAR(event_time);
-    }
 }
 
 void
-ArchTimer::unserialize(Checkpoint *cp,
-                                         const std::string &section)
+ArchTimer::unserialize(CheckpointIn &cp)
 {
-    paramIn(cp, section, "control_serial", _control);
+    paramIn(cp, "control_serial", _control);
     // We didn't serialize an offset before we added support for the
     // virtual timer. Consider it optional to maintain backwards
     // compatibility.
     if (!UNSERIALIZE_OPT_SCALAR(_offset))
         _offset = 0;
-    bool event_scheduled;
-    UNSERIALIZE_SCALAR(event_scheduled);
-    if (event_scheduled) {
-        Tick event_time;
-        UNSERIALIZE_SCALAR(event_time);
-        _parent.schedule(_counterLimitReachedEvent, event_time);
-    }
+
+    // We no longer schedule an event here because we may enter KVM
+    // emulation.  The event creation is delayed until drainResume().
+}
+
+DrainState
+ArchTimer::drain()
+{
+    if (_counterLimitReachedEvent.scheduled())
+        _parent.deschedule(_counterLimitReachedEvent);
+
+    return DrainState::Drained;
+}
+
+void
+ArchTimer::drainResume()
+{
+    updateCounter();
 }
 
 void
@@ -232,36 +240,36 @@ ArchTimer::Interrupt::clear()
 
 GenericTimer::GenericTimer(GenericTimerParams *p)
     : SimObject(p),
+      system(*p->system),
       gic(p->gic),
       irqPhys(p->int_phys),
       irqVirt(p->int_virt)
 {
-    dynamic_cast<ArmSystem &>(*p->system).setGenericTimer(this);
+    fatal_if(!p->system, "No system specified, can't instantiate timer.\n");
+    system.setGenericTimer(this);
 }
 
 void
-GenericTimer::serialize(std::ostream &os)
+GenericTimer::serialize(CheckpointOut &cp) const
 {
-    paramOut(os, "cpu_count", timers.size());
+    paramOut(cp, "cpu_count", timers.size());
 
-    nameOut(os, csprintf("%s.sys_counter", name()));
-    systemCounter.serialize(os);
+    systemCounter.serializeSection(cp, "sys_counter");
 
     for (int i = 0; i < timers.size(); ++i) {
-        CoreTimers &core(getTimers(i));
+        const CoreTimers &core(*timers[i]);
 
-        nameOut(os, core.phys.name());
-        core.phys.serialize(os);
-
-        nameOut(os, core.virt.name());
-        core.virt.serialize(os);
+        // This should really be phys_timerN, but we are stuck with
+        // arch_timer for backwards compatibility.
+        core.phys.serializeSection(cp, csprintf("arch_timer%d", i));
+        core.virt.serializeSection(cp, csprintf("virt_timer%d", i));
     }
 }
 
 void
-GenericTimer::unserialize(Checkpoint *cp, const std::string &section)
+GenericTimer::unserialize(CheckpointIn &cp)
 {
-    systemCounter.unserialize(cp, csprintf("%s.sys_counter", section));
+    systemCounter.unserializeSection(cp, "sys_counter");
 
     // Try to unserialize the CPU count. Old versions of the timer
     // model assumed a 8 CPUs, so we fall back to that if the field
@@ -278,8 +286,8 @@ GenericTimer::unserialize(Checkpoint *cp, const std::string &section)
         CoreTimers &core(getTimers(i));
         // This should really be phys_timerN, but we are stuck with
         // arch_timer for backwards compatibility.
-        core.phys.unserialize(cp, csprintf("%s.arch_timer%d", section, i));
-        core.virt.unserialize(cp, csprintf("%s.virt_timer%d", section, i));
+        core.phys.unserializeSection(cp, csprintf("arch_timer%d", i));
+        core.virt.unserializeSection(cp, csprintf("virt_timer%d", i));
     }
 }
 
@@ -302,7 +310,7 @@ GenericTimer::createTimers(unsigned cpus)
     timers.resize(cpus);
     for (unsigned i = old_cpu_count; i < cpus; ++i) {
         timers[i].reset(
-            new CoreTimers(*this, i, irqPhys, irqVirt));
+            new CoreTimers(*this, system, i, irqPhys, irqVirt));
     }
 }
 
@@ -498,24 +506,20 @@ GenericTimerMem::GenericTimerMem(GenericTimerMemParams *p)
 }
 
 void
-GenericTimerMem::serialize(std::ostream &os)
+GenericTimerMem::serialize(CheckpointOut &cp) const
 {
-    paramOut(os, "timer_count", 1);
+    paramOut(cp, "timer_count", 1);
 
-    nameOut(os, csprintf("%s.sys_counter", name()));
-    systemCounter.serialize(os);
+    systemCounter.serializeSection(cp, "sys_counter");
 
-    nameOut(os, physTimer.name());
-    physTimer.serialize(os);
-
-    nameOut(os, virtTimer.name());
-    virtTimer.serialize(os);
+    physTimer.serializeSection(cp, "phys_timer0");
+    virtTimer.serializeSection(cp, "virt_timer0");
 }
 
 void
-GenericTimerMem::unserialize(Checkpoint *cp, const std::string &section)
+GenericTimerMem::unserialize(CheckpointIn &cp)
 {
-    systemCounter.unserialize(cp, csprintf("%s.sys_counter", section));
+    systemCounter.unserializeSection(cp, "sys_counter");
 
     unsigned timer_count;
     UNSERIALIZE_SCALAR(timer_count);
@@ -524,8 +528,8 @@ GenericTimerMem::unserialize(Checkpoint *cp, const std::string &section)
     if (timer_count != 1)
         panic("Incompatible checkpoint: Only one set of timers supported");
 
-    physTimer.unserialize(cp, csprintf("%s.phys_timer0", section));
-    virtTimer.unserialize(cp, csprintf("%s.virt_timer0", section));
+    physTimer.unserializeSection(cp, "phys_timer0");
+    virtTimer.unserializeSection(cp, "virt_timer0");
 }
 
 Tick

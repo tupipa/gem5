@@ -1,4 +1,5 @@
 # Copyright (c) 2009 The Hewlett-Packard Development Company
+# Copyright (c) 2017 Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -25,6 +26,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 # Authors: Nathan Binkert
+#          Lena Olson
 
 import os.path
 import re
@@ -62,7 +64,6 @@ class SLICC(Grammar):
         return code
 
     def process(self):
-        self.decl_list.findMachines()
         self.decl_list.generate()
 
     def writeCodeFiles(self, code_path, includes):
@@ -72,10 +73,7 @@ class SLICC(Grammar):
         self.symtab.writeHTMLFiles(html_path)
 
     def files(self):
-        f = set([
-            'MachineType.cc',
-            'MachineType.hh',
-            'Types.hh' ])
+        f = set(['Types.hh'])
 
         f |= self.decl_list.files()
 
@@ -113,6 +111,7 @@ class SLICC(Grammar):
         'stall_and_wait' : 'STALL_AND_WAIT',
         'enqueue' : 'ENQUEUE',
         'check_allocate' : 'CHECK_ALLOCATE',
+        'check_next_cycle' : 'CHECK_NEXT_CYCLE',
         'check_stop_slots' : 'CHECK_STOP_SLOTS',
         'static_cast' : 'STATIC_CAST',
         'if' : 'IF',
@@ -161,7 +160,8 @@ class SLICC(Grammar):
 
     precedence = (
         ('left', 'INCR', 'DECR'),
-        ('left', 'AND', 'OR'),
+        ('left', 'OR'),
+        ('left', 'AND'),
         ('left', 'EQ', 'NE'),
         ('left', 'LT', 'GT', 'LE', 'GE'),
         ('left', 'RIGHTSHIFT', 'LEFTSHIFT'),
@@ -258,11 +258,11 @@ class SLICC(Grammar):
         p[0] = self.parse_file(filename)
 
     def p_decl__machine0(self, p):
-        "decl : MACHINE '(' idents ')' ':' obj_decls '{' decls '}'"
+        "decl : MACHINE '(' enumeration ')' ':' obj_decls '{' decls '}'"
         p[0] = ast.MachineAST(self, p[3], [], p[7], p[9])
 
     def p_decl__machine1(self, p):
-        "decl : MACHINE '(' idents pairs ')' ':' obj_decls '{' decls '}'"
+        "decl : MACHINE '(' enumeration pairs ')' ':' obj_decls '{' decls '}'"
         p[0] = ast.MachineAST(self, p[3], p[4], p[7], p[9])
 
     def p_decl__action(self, p):
@@ -278,7 +278,7 @@ class SLICC(Grammar):
         p[0] = ast.OutPortDeclAST(self, p[3], p[5], p[7], p[8])
 
     def p_decl__trans0(self, p):
-        "decl : TRANS '(' idents ',' idents ',' ident ')' idents"
+        "decl : TRANS '(' idents ',' idents ',' ident_or_star ')' idents"
         p[0] = ast.TransitionDeclAST(self, [], p[3], p[5], p[7], p[9])
 
     def p_decl__trans1(self, p):
@@ -286,7 +286,7 @@ class SLICC(Grammar):
         p[0] = ast.TransitionDeclAST(self, [], p[3], p[5], None, p[7])
 
     def p_decl__trans2(self, p):
-        "decl : TRANS '(' idents ',' idents ',' ident ')' idents idents"
+        "decl : TRANS '(' idents ',' idents ',' ident_or_star ')' idents idents"
         p[0] = ast.TransitionDeclAST(self, p[9], p[3], p[5], p[7], p[10])
 
     def p_decl__trans3(self, p):
@@ -506,6 +506,11 @@ class SLICC(Grammar):
         "ident : IDENT"
         p[0] = p[1]
 
+    def p_ident_or_star(self, p):
+        """ident_or_star : ident
+                         | STAR"""
+        p[0] = p[1]
+
     # Pair and pair lists
     def p_pairs__list(self, p):
         "pairs : ',' pairsx"
@@ -592,6 +597,10 @@ class SLICC(Grammar):
         "statement : CHECK_ALLOCATE '(' var ')' SEMI"
         p[0] = ast.CheckAllocateStatementAST(self, p[3])
 
+    def p_statement__check_next_cycle(self, p):
+        "statement : CHECK_NEXT_CYCLE '(' ')' SEMI"
+        p[0] = ast.CheckNextCycleAST(self)
+
     def p_statement__check_stop(self, p):
         "statement : CHECK_STOP_SLOTS '(' var ',' STRING ',' STRING ')' SEMI"
         p[0] = ast.CheckStopStatementAST(self, p[3], p[5], p[7])
@@ -659,15 +668,18 @@ class SLICC(Grammar):
 
     def p_expr__member_method_call(self, p):
         "aexpr : aexpr DOT ident '(' exprs ')'"
-        p[0] = ast.MemberMethodCallExprAST(self, p[1], p[3], p[5])
+        p[0] = ast.MemberMethodCallExprAST(self, p[1],
+                    ast.FuncCallExprAST(self, p[3], p[5]))
 
     def p_expr__member_method_call_lookup(self, p):
         "aexpr : aexpr '[' exprs ']'"
-        p[0] = ast.MemberMethodCallExprAST(self, p[1], "lookup", p[3])
+        p[0] = ast.MemberMethodCallExprAST(self, p[1],
+                    ast.FuncCallExprAST(self, "lookup", p[3]))
 
     def p_expr__class_method_call(self, p):
         "aexpr : type DOUBLE_COLON ident '(' exprs ')'"
-        p[0] = ast.ClassMethodCallExprAST(self, p[1], p[3], p[5])
+        p[0] = ast.ClassMethodCallExprAST(self, p[1],
+                    ast.FuncCallExprAST(self, p[3], p[5]))
 
     def p_expr__aexpr(self, p):
         "expr : aexpr"

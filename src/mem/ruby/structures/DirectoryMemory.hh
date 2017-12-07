@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2017 ARM Limited
+ * All rights reserved.
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 1999-2008 Mark D. Hill and David A. Wood
  * All rights reserved.
  *
@@ -32,6 +44,7 @@
 #include <iostream>
 #include <string>
 
+#include "base/addr_range.hh"
 #include "mem/protocol/DirectoryRequestType.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/slicc_interface/AbstractEntry.hh"
@@ -47,15 +60,24 @@ class DirectoryMemory : public SimObject
 
     void init();
 
-    uint64 mapAddressToLocalIdx(PhysAddress address);
-    static uint64 mapAddressToDirectoryVersion(PhysAddress address);
+    /**
+     * Return the index in the directory based on an address
+     *
+     * This function transforms an address which belongs to a not
+     * necessarily continuous vector of address ranges into a flat
+     * address that we use to index in the directory
+     *
+     * @param an input address
+     * @return the corresponding index in the directory
+     *
+     */
+    uint64_t mapAddressToLocalIdx(Addr address);
 
-    uint64 getSize() { return m_size_bytes; }
+    uint64_t getSize() { return m_size_bytes; }
 
-    bool isPresent(PhysAddress address);
-    AbstractEntry* lookup(PhysAddress address);
-    AbstractEntry* allocate(const PhysAddress& address,
-                            AbstractEntry* new_entry);
+    bool isPresent(Addr address);
+    AbstractEntry *lookup(Addr address);
+    AbstractEntry *allocate(Addr address, AbstractEntry* new_entry);
 
     void print(std::ostream& out) const;
     void recordRequestType(DirectoryRequestType requestType);
@@ -70,15 +92,15 @@ class DirectoryMemory : public SimObject
     AbstractEntry **m_entries;
     // int m_size;  // # of memory module blocks this directory is
                     // responsible for
-    uint64 m_size_bytes;
-    uint64 m_size_bits;
-    uint64 m_num_entries;
-    int m_version;
+    uint64_t m_size_bytes;
+    uint64_t m_size_bits;
+    uint64_t m_num_entries;
 
-    static int m_num_directories;
-    static int m_num_directories_bits;
-    static uint64_t m_total_size_bytes;
-    static int m_numa_high_bit;
+    /**
+     * The address range for which the directory responds. Normally
+     * this is all possible memory addresses.
+     */
+    const AddrRangeList addrRanges;
 };
 
 inline std::ostream&

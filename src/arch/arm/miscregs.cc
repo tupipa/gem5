@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2013, 2015 ARM Limited
+ * Copyright (c) 2010-2013, 2015-2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -39,9 +39,12 @@
  *          Giacomo Gabrielli
  */
 
-#include "arch/arm/isa.hh"
 #include "arch/arm/miscregs.hh"
-#include "base/misc.hh"
+
+#include <tuple>
+
+#include "arch/arm/isa.hh"
+#include "base/logging.hh"
 #include "cpu/thread_context.hh"
 #include "sim/full_system.hh"
 
@@ -341,7 +344,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_CSSELR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_CSSELR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_CSSELR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_VPIDR
@@ -351,13 +354,13 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_SCTLR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_SCTLR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_SCTLR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_ACTLR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_ACTLR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_ACTLR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_CPACR
@@ -385,19 +388,19 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_TTBR0
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TTBR0_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_TTBR0_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_TTBR1
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TTBR1_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_TTBR1_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_TTBCR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TTBCR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_TTBCR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_HTCR
@@ -407,31 +410,31 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_DACR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_DACR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_DACR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_DFSR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_DFSR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_DFSR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_IFSR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_IFSR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_IFSR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_ADFSR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010100")),
     // MISCREG_ADFSR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100100")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100100")),
     // MISCREG_ADFSR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100100")),
     // MISCREG_AIFSR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010100")),
     // MISCREG_AIFSR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100100")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100100")),
     // MISCREG_AIFSR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100100")),
     // MISCREG_HADFSR
@@ -443,13 +446,13 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_DFAR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_DFAR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_DFAR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_IFAR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_IFAR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_IFAR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_HDFAR
@@ -465,7 +468,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_PAR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_PAR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_PAR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_ICIALLU
@@ -615,37 +618,37 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_PRRR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_PRRR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_PRRR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_MAIR0
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_MAIR0_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_MAIR0_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_NMRR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_NMRR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_NMRR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_MAIR1
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_MAIR1_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_MAIR1_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_AMAIR0
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_AMAIR0_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_AMAIR0_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_AMAIR1
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_AMAIR1_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_AMAIR1_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_HMAIR0
@@ -659,7 +662,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_VBAR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_VBAR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_VBAR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_MVBAR
@@ -675,25 +678,25 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_CONTEXTIDR
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_CONTEXTIDR_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_CONTEXTIDR_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_TPIDRURW
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TPIDRURW_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100111111100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111111111100001")),
     // MISCREG_TPIDRURW_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_TPIDRURO
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TPIDRURO_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110101100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110101100001")),
     // MISCREG_TPIDRURO_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_TPIDRPRW
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_TPIDRPRW_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100110000100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111110000100001")),
     // MISCREG_TPIDRPRW_S
     bitset<NUM_MISCREG_INFOS>(string("00110011000000100001")),
     // MISCREG_HTPIDR
@@ -705,13 +708,13 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_CNTP_TVAL
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_CNTP_TVAL_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100111111100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111111111100001")),
     // MISCREG_CNTP_TVAL_S
     bitset<NUM_MISCREG_INFOS>(string("00110011001111100000")),
     // MISCREG_CNTP_CTL
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_CNTP_CTL_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100111111100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111111111100001")),
     // MISCREG_CNTP_CTL_S
     bitset<NUM_MISCREG_INFOS>(string("00110011001111100000")),
     // MISCREG_CNTV_TVAL
@@ -759,7 +762,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_CNTP_CVAL
     bitset<NUM_MISCREG_INFOS>(string("00000000000000010001")),
     // MISCREG_CNTP_CVAL_NS
-    bitset<NUM_MISCREG_INFOS>(string("11001100111111100001")),
+    bitset<NUM_MISCREG_INFOS>(string("11001111111111100001")),
     // MISCREG_CNTP_CVAL_S
     bitset<NUM_MISCREG_INFOS>(string("00110011001111100000")),
     // MISCREG_CNTV_CVAL
@@ -1063,7 +1066,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_IC_IALLU
     bitset<NUM_MISCREG_INFOS>(string("10101010100000000101")),
     // MISCREG_DC_IVAC_Xt
-    bitset<NUM_MISCREG_INFOS>(string("10101010100000000101")),
+    bitset<NUM_MISCREG_INFOS>(string("10101010101010000101")),
     // MISCREG_DC_ISW_Xt
     bitset<NUM_MISCREG_INFOS>(string("10101010100000000101")),
     // MISCREG_AT_S1E1R_Xt
@@ -1291,7 +1294,7 @@ bitset<NUM_MISCREG_INFOS> miscRegInfo[NUM_MISCREGS] = {
     // MISCREG_CNTVOFF_EL2
     bitset<NUM_MISCREG_INFOS>(string("11111100000000000001")),
     // MISCREG_CNTHCTL_EL2
-    bitset<NUM_MISCREG_INFOS>(string("01111000000000000000")),
+    bitset<NUM_MISCREG_INFOS>(string("01111000000000000100")),
     // MISCREG_CNTHP_TVAL_EL2
     bitset<NUM_MISCREG_INFOS>(string("01111000000000000000")),
     // MISCREG_CNTHP_CTL_EL2
@@ -1966,11 +1969,12 @@ decodeCP15Reg64(unsigned crm, unsigned opc1)
     return MISCREG_CP15_UNIMPL;
 }
 
-bool
-canReadCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
+std::tuple<bool, bool>
+canReadCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr)
 {
     bool secure = !scr.ns;
-    bool canRead;
+    bool canRead = false;
+    bool undefined = false;
 
     switch (cpsr.mode) {
       case MODE_USER:
@@ -1994,18 +1998,19 @@ canReadCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
         canRead = miscRegInfo[reg][MISCREG_HYP_RD];
         break;
       default:
-        panic("Unrecognized mode setting in CPSR.\n");
+        undefined = true;
     }
     // can't do permissions checkes on the root of a banked pair of regs
     assert(!miscRegInfo[reg][MISCREG_BANKED]);
-    return canRead;
+    return std::make_tuple(canRead, undefined);
 }
 
-bool
-canWriteCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
+std::tuple<bool, bool>
+canWriteCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr)
 {
     bool secure = !scr.ns;
-    bool canWrite;
+    bool canWrite = false;
+    bool undefined = false;
 
     switch (cpsr.mode) {
       case MODE_USER:
@@ -2029,22 +2034,18 @@ canWriteCoprocReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
         canWrite =  miscRegInfo[reg][MISCREG_HYP_WR];
         break;
       default:
-        panic("Unrecognized mode setting in CPSR.\n");
+        undefined = true;
     }
     // can't do permissions checkes on the root of a banked pair of regs
     assert(!miscRegInfo[reg][MISCREG_BANKED]);
-    return canWrite;
+    return std::make_tuple(canWrite, undefined);
 }
 
 int
 flattenMiscRegNsBanked(MiscRegIndex reg, ThreadContext *tc)
 {
-    int reg_as_int = static_cast<int>(reg);
-    if (miscRegInfo[reg][MISCREG_BANKED]) {
-        SCR scr = tc->readMiscReg(MISCREG_SCR);
-        reg_as_int += (ArmSystem::haveSecurity(tc) && !scr.ns) ? 2 : 1;
-    }
-    return reg_as_int;
+    SCR scr = tc->readMiscReg(MISCREG_SCR);
+    return flattenMiscRegNsBanked(reg, tc, scr.ns);
 }
 
 int
@@ -2052,7 +2053,8 @@ flattenMiscRegNsBanked(MiscRegIndex reg, ThreadContext *tc, bool ns)
 {
     int reg_as_int = static_cast<int>(reg);
     if (miscRegInfo[reg][MISCREG_BANKED]) {
-        reg_as_int += (ArmSystem::haveSecurity(tc) && !ns) ? 2 : 1;
+        reg_as_int += (ArmSystem::haveSecurity(tc) &&
+                      !ArmSystem::highestELIs64(tc) && !ns) ? 2 : 1;
     }
     return reg_as_int;
 }
@@ -2118,9 +2120,8 @@ canReadAArch64SysReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
       case EL1:
         return secure ? miscRegInfo[reg][MISCREG_PRI_S_RD] :
             miscRegInfo[reg][MISCREG_PRI_NS_RD];
-      // @todo: uncomment this to enable Virtualization
-      // case EL2:
-      //   return miscRegInfo[reg][MISCREG_HYP_RD];
+      case EL2:
+        return miscRegInfo[reg][MISCREG_HYP_RD];
       case EL3:
         return secure ? miscRegInfo[reg][MISCREG_MON_NS0_RD] :
             miscRegInfo[reg][MISCREG_MON_NS1_RD];
@@ -2148,7 +2149,8 @@ canWriteAArch64SysReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
         if (el == EL0 && !sctlr.dze)
             return false;
     }
-    if (reg == MISCREG_DC_CVAC_Xt || reg == MISCREG_DC_CIVAC_Xt) {
+    if (reg == MISCREG_DC_CVAC_Xt || reg == MISCREG_DC_CIVAC_Xt ||
+        reg == MISCREG_DC_IVAC_Xt) {
         SCTLR sctlr = tc->readMiscReg(MISCREG_SCTLR_EL1);
         if (el == EL0 && !sctlr.uci)
             return false;
@@ -2163,9 +2165,8 @@ canWriteAArch64SysReg(MiscRegIndex reg, SCR scr, CPSR cpsr, ThreadContext *tc)
       case EL1:
         return secure ? miscRegInfo[reg][MISCREG_PRI_S_WR] :
             miscRegInfo[reg][MISCREG_PRI_NS_WR];
-      // @todo: uncomment this to enable Virtualization
-      // case EL2:
-      //   return miscRegInfo[reg][MISCREG_HYP_WR];
+      case EL2:
+        return miscRegInfo[reg][MISCREG_HYP_WR];
       case EL3:
         return secure ? miscRegInfo[reg][MISCREG_MON_NS0_WR] :
             miscRegInfo[reg][MISCREG_MON_NS1_WR];

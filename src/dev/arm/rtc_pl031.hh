@@ -91,7 +91,7 @@ class PL031 : public AmbaIntDevice
 
     /** Called when the counter reaches matches */
     void counterMatch();
-    EventWrapper<PL031, &PL031::counterMatch> matchEvent;
+    EventFunctionWrapper matchEvent;
 
     /** Called to update the matchEvent when the load Value or match value are
      * written.
@@ -116,18 +116,17 @@ class PL031 : public AmbaIntDevice
      * @param pkt The memory request.
      * @param data Where to put the data.
      */
-    virtual Tick read(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
 
     /**
      * Handle writes to the device
      * @param pkt The memory request.
      * @param data the data
      */
-    virtual Tick write(PacketPtr pkt);
+    Tick write(PacketPtr pkt) override;
 
-
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 

@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2015 ARM Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2001-2005 The Regents of The University of Michigan
  * Copyright (c) 2010 Advanced Micro Devices, Inc.
  * All rights reserved.
@@ -37,21 +49,18 @@
 #ifndef __SIM_OBJECT_HH__
 #define __SIM_OBJECT_HH__
 
-#include <iostream>
-#include <list>
-#include <map>
 #include <string>
 #include <vector>
 
-#include "enums/MemoryMode.hh"
 #include "params/SimObject.hh"
 #include "sim/drain.hh"
+#include "sim/eventq.hh"
 #include "sim/eventq_impl.hh"
 #include "sim/serialize.hh"
 
-class BaseCPU;
-class Event;
+class EventManager;
 class ProbeManager;
+
 /**
  * Abstract superclass for simulation objects.  Represents things that
  * correspond to physical components and can be specified via the
@@ -126,7 +135,7 @@ class SimObject : public EventManager, public Serializable, public Drainable
      *
      * @param cp Checkpoint to restore the state from.
      */
-    virtual void loadState(Checkpoint *cp);
+    virtual void loadState(CheckpointIn &cp);
 
     /**
      * initState() is called on each SimObject when *not* restoring
@@ -169,16 +178,41 @@ class SimObject : public EventManager, public Serializable, public Drainable
     virtual void startup();
 
     /**
-     * Provide a default implementation of the drain interface that
-     * simply returns 0 (draining completed) and sets the drain state
-     * to Drained.
+     * Provide a default implementation of the drain interface for
+     * objects that don't need draining.
      */
-    unsigned int drain(DrainManager *drainManger);
+    DrainState drain() override { return DrainState::Drained; }
+
+    /**
+     * Write back dirty buffers to memory using functional writes.
+     *
+     * After returning, an object implementing this method should have
+     * written all its dirty data back to memory. This method is
+     * typically used to prepare a system with caches for
+     * checkpointing.
+     */
+    virtual void memWriteback() {};
+
+    /**
+     * Invalidate the contents of memory buffers.
+     *
+     * When the switching to hardware virtualized CPU models, we need
+     * to make sure that we don't have any cached state in the system
+     * that might become stale when we return. This method is used to
+     * flush all such state back to main memory.
+     *
+     * @warn This does <i>not</i> cause any dirty state to be written
+     * back to memory.
+     */
+    virtual void memInvalidate() {};
+
+    void serialize(CheckpointOut &cp) const override {};
+    void unserialize(CheckpointIn &cp) override {};
 
     /**
      * Serialize all SimObjects in the system.
      */
-    static void serializeAll(std::ostream &os);
+    static void serializeAll(CheckpointOut &cp);
 
 #ifdef DEBUG
   public:
@@ -192,6 +226,21 @@ class SimObject : public EventManager, public Serializable, public Drainable
      * char* rather than std::string to make it callable from gdb.
      */
     static SimObject *find(const char *name);
+};
+
+/**
+ * Base class to wrap object resolving functionality.
+ *
+ * This can be provided to the serialization framework to allow it to
+ * map object names onto C++ objects.
+ */
+class SimObjectResolver
+{
+  public:
+    virtual ~SimObjectResolver() { }
+
+    // Find a SimObject given a full path name
+    virtual SimObject *resolveSimObject(const std::string &name) = 0;
 };
 
 #ifdef DEBUG

@@ -136,6 +136,12 @@ class Bridge : public MemObject
         unsigned int respQueueLimit;
 
         /**
+         * Upstream caches need this packet until true is returned, so
+         * hold it for deletion until a subsequent call
+         */
+        std::unique_ptr<Packet> pendingDelete;
+
+        /**
          * Is this side blocked from accepting new response packets.
          *
          * @return true if the reserved space has reached the set limit
@@ -150,8 +156,7 @@ class Bridge : public MemObject
         void trySendTiming();
 
         /** Send event for the response queue. */
-        EventWrapper<BridgeSlavePort,
-                     &BridgeSlavePort::trySendTiming> sendEvent;
+        EventFunctionWrapper sendEvent;
 
       public:
 
@@ -249,8 +254,7 @@ class Bridge : public MemObject
         void trySendTiming();
 
         /** Send event for the request queue. */
-        EventWrapper<BridgeMasterPort,
-                     &BridgeMasterPort::trySendTiming> sendEvent;
+        EventFunctionWrapper sendEvent;
 
       public:
 

@@ -29,6 +29,7 @@
  */
 
 #include "dev/x86/i8237.hh"
+
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 
@@ -126,13 +127,13 @@ X86ISA::I8237::write(PacketPtr pkt)
 }
 
 void
-X86ISA::I8237::serialize(std::ostream &os)
+X86ISA::I8237::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(maskReg);
 }
 
 void
-X86ISA::I8237::unserialize(Checkpoint *cp, const std::string &section)
+X86ISA::I8237::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(maskReg);
 }

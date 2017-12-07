@@ -38,22 +38,23 @@
 #define __MEM_PAGE_TABLE_HH__
 
 #include <string>
+#include <unordered_map>
 
 #include "arch/isa_traits.hh"
 #include "arch/tlb.hh"
-#include "base/hashmap.hh"
+#include "base/intmath.hh"
 #include "base/types.hh"
 #include "config/the_isa.hh"
 #include "mem/request.hh"
 #include "sim/serialize.hh"
-#include "sim/system.hh"
 
 class ThreadContext;
+class System;
 
 /**
  * Declaration of base class for page table
  */
-class PageTableBase
+class PageTableBase : public Serializable
 {
   protected:
     struct cacheElement {
@@ -93,6 +94,7 @@ class PageTableBase
      * bit 3 - read-write | read-only
      */
     enum MappingFlags : uint32_t {
+        Zero        = 0,
         Clobber     = 1,
         NotPresent  = 2,
         Uncacheable = 4,
@@ -193,9 +195,8 @@ class PageTableBase
         }
     }
 
-    virtual void serialize(std::ostream &os) = 0;
-
-    virtual void unserialize(Checkpoint *cp, const std::string &section) = 0;
+    virtual void getMappings(std::vector<std::pair<Addr, Addr>>
+                             *addr_mappings) {};
 };
 
 /**
@@ -204,7 +205,7 @@ class PageTableBase
 class FuncPageTable : public PageTableBase
 {
   private:
-    typedef m5::hash_map<Addr, TheISA::TlbEntry> PTable;
+    typedef std::unordered_map<Addr, TheISA::TlbEntry> PTable;
     typedef PTable::iterator PTableItr;
     PTable pTable;
 
@@ -215,14 +216,14 @@ class FuncPageTable : public PageTableBase
 
     ~FuncPageTable();
 
-    void initState(ThreadContext* tc)
+    void initState(ThreadContext* tc) override
     {
     }
 
     void map(Addr vaddr, Addr paddr, int64_t size,
-             uint64_t flags = 0);
-    void remap(Addr vaddr, int64_t size, Addr new_vaddr);
-    void unmap(Addr vaddr, int64_t size);
+             uint64_t flags = 0) override;
+    void remap(Addr vaddr, int64_t size, Addr new_vaddr) override;
+    void unmap(Addr vaddr, int64_t size) override;
 
     /**
      * Check if any pages in a region are already allocated
@@ -230,18 +231,19 @@ class FuncPageTable : public PageTableBase
      * @param size The length of the region.
      * @return True if no pages in the region are mapped.
      */
-    bool isUnmapped(Addr vaddr, int64_t size);
+    bool isUnmapped(Addr vaddr, int64_t size) override;
 
     /**
      * Lookup function
      * @param vaddr The virtual address.
      * @return entry The page table entry corresponding to vaddr.
      */
-    bool lookup(Addr vaddr, TheISA::TlbEntry &entry);
+    bool lookup(Addr vaddr, TheISA::TlbEntry &entry) override;
 
-    void serialize(std::ostream &os);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void getMappings(std::vector<std::pair<Addr, Addr>> *addr_maps) override;
 };
 
 /**

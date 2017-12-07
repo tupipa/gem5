@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 ARM Limited
+ * Copyright (c) 2014, 2016-2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -48,6 +48,8 @@
 #include "sim/sim_object.hh"
 
 struct VirtIODeviceBaseParams;
+struct VirtIODummyDeviceParams;
+
 class VirtQueue;
 
 /** @{
@@ -312,16 +314,15 @@ class VirtDescriptor
  * @note Queues must be registered with
  * VirtIODeviceBase::registerQueue() to be active.
  */
-class VirtQueue {
+class VirtQueue : public Serializable {
 public:
     virtual ~VirtQueue() {};
 
     /** @{
      * @name Checkpointing Interface
      */
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
-    /** @} */
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
     /** @{
      * @name Low-level Device Interface
@@ -432,8 +433,8 @@ public:
      * Page size used by VirtIO.\ It's hard-coded to 4096 bytes in
      * the spec for historical reasons.
      */
-    static const unsigned ALIGN_BITS = 12;
-    static const unsigned ALIGN_SIZE = 1 << ALIGN_BITS;
+    static const Addr ALIGN_BITS = 12;
+    static const Addr ALIGN_SIZE = 1 << ALIGN_BITS;
     /** @} */
 
   protected:
@@ -596,10 +597,8 @@ class VirtIODeviceBase : public SimObject
     /** @{
      * @name SimObject Interfaces
      */
-
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
-
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
     /** @} */
 
 
@@ -876,6 +875,16 @@ class VirtIODeviceBase : public SimObject
 
     /** Callbacks to kick the guest through the transport layer  */
     Callback *transKick;
+};
+
+class VirtIODummyDevice : public VirtIODeviceBase
+{
+  public:
+    VirtIODummyDevice(VirtIODummyDeviceParams *params);
+
+  protected:
+    /** VirtIO device ID */
+    static const DeviceId ID_INVALID = 0x00;
 };
 
 #endif // __DEV_VIRTIO_BASE_HH__

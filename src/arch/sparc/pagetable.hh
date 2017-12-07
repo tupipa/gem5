@@ -35,7 +35,7 @@
 
 #include "arch/sparc/isa_traits.hh"
 #include "base/bitfield.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 
 class Checkpoint;
 
@@ -57,7 +57,7 @@ class TteTag
     TteTag(uint64_t e) : entry(e), populated(true) {}
 
     const TteTag &
-    operator=(uint64_t e) 
+    operator=(uint64_t e)
     {
         populated = true;
         entry = e;
@@ -277,8 +277,8 @@ struct TlbEntry
         range.va = new_vaddr;
     }
 
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const;
+    void unserialize(CheckpointIn &cp);
 };
 
 } // namespace SparcISA

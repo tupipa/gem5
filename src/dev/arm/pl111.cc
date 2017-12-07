@@ -38,14 +38,15 @@
  *          Ali Saidi
  */
 
-#include "base/vnc/vncinput.hh"
+#include "dev/arm/pl111.hh"
+
 #include "base/output.hh"
 #include "base/trace.hh"
+#include "base/vnc/vncinput.hh"
 #include "debug/PL111.hh"
 #include "debug/Uart.hh"
 #include "dev/arm/amba_device.hh"
 #include "dev/arm/base_gic.hh"
-#include "dev/arm/pl111.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "sim/system.hh"
@@ -67,10 +68,13 @@ Pl111::Pl111(const Params *p)
       vnc(p->vnc), bmp(&fb), pic(NULL),
       width(LcdMaxWidth), height(LcdMaxHeight),
       bytesPerPixel(4), startTime(0), startAddr(0), maxAddr(0), curAddr(0),
-      waterMark(0), dmaPendingNum(0), readEvent(this), fillFifoEvent(this),
+      waterMark(0), dmaPendingNum(0),
+      readEvent([this]{ readFramebuffer(); }, name()),
+      fillFifoEvent([this]{ fillFifo(); }, name()),
       dmaDoneEventAll(maxOutstandingDma, this),
       dmaDoneEventFree(maxOutstandingDma),
-      intEvent(this), enableCapture(p->enable_capture)
+      intEvent([this]{ generateInterrupt(); }, name()),
+      enableCapture(p->enable_capture)
 {
     pioSize = 0xFFFF;
 
@@ -523,11 +527,12 @@ Pl111::dmaDone()
             DPRINTF(PL111, "-- write out frame buffer into bmp\n");
 
             if (!pic)
-                pic = simout.create(csprintf("%s.framebuffer.bmp", sys->name()), true);
+                pic = simout.create(csprintf("%s.framebuffer.bmp", sys->name()),
+                                    true);
 
             assert(pic);
-            pic->seekp(0);
-            bmp.write(*pic);
+            pic->stream()->seekp(0);
+            bmp.write(*pic->stream());
         }
 
         // schedule the next read based on when the last frame started
@@ -547,7 +552,7 @@ Pl111::dmaDone()
 }
 
 void
-Pl111::serialize(std::ostream &os)
+Pl111::serialize(CheckpointOut &cp) const
 {
     DPRINTF(PL111, "Serializing ARM PL111\n");
 
@@ -633,11 +638,11 @@ Pl111::serialize(std::ostream &os)
         dma_done_event_tick[x] = dmaDoneEventAll[x].scheduled() ?
             dmaDoneEventAll[x].when() : 0;
     }
-    arrayParamOut(os, "dma_done_event_tick", dma_done_event_tick);
+    SERIALIZE_CONTAINER(dma_done_event_tick);
 }
 
 void
-Pl111::unserialize(Checkpoint *cp, const std::string &section)
+Pl111::unserialize(CheckpointIn &cp)
 {
     DPRINTF(PL111, "Unserializing ARM PL111\n");
 
@@ -731,7 +736,7 @@ Pl111::unserialize(Checkpoint *cp, const std::string &section)
 
     vector<Tick> dma_done_event_tick;
     dma_done_event_tick.resize(maxOutstandingDma);
-    arrayParamIn(cp, section, "dma_done_event_tick", dma_done_event_tick);
+    UNSERIALIZE_CONTAINER(dma_done_event_tick);
     dmaDoneEventFree.clear();
     for (int x = 0; x < maxOutstandingDma; x++) {
         if (dma_done_event_tick[x])

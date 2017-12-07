@@ -33,13 +33,14 @@
 
 #include "arch/generic/decode_cache.hh"
 #include "arch/mips/types.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/types.hh"
 #include "cpu/static_inst.hh"
 
 namespace MipsISA
 {
 
+class ISA;
 class Decoder
 {
   protected:
@@ -48,7 +49,7 @@ class Decoder
     bool instDone;
 
   public:
-    Decoder() : instDone(false)
+    Decoder(ISA* isa = nullptr) : instDone(false)
     {}
 
     void

@@ -28,33 +28,32 @@
  * Authors: Anthony Gutierrez
  */
 
+#include "base/loader/dtb_object.hh"
+
 #include <sys/mman.h>
-#include <err.h>
 #include <unistd.h>
 
 #include <cassert>
 
-#include "base/loader/dtb_object.hh"
-#include "sim/byteswap.hh"
 #include "fdt.h"
 #include "libfdt.h"
+#include "sim/byteswap.hh"
 
 ObjectFile *
-DtbObject::tryFile(const std::string &fname, int fd, size_t len, uint8_t *data)
+DtbObject::tryFile(const std::string &fname, size_t len, uint8_t *data)
 {
     // Check if this is a FDT file by looking for magic number
     if (fdt_magic((void*)data) == FDT_MAGIC) {
-        return new DtbObject(fname, fd, len, data,
+        return new DtbObject(fname, len, data,
                              ObjectFile::UnknownArch, ObjectFile::UnknownOpSys);
     } else {
         return NULL;
     }
 }
 
-DtbObject::DtbObject(const std::string &_filename, int _fd,
-                     size_t _len, uint8_t *_data,
+DtbObject::DtbObject(const std::string &_filename, size_t _len, uint8_t *_data,
                      Arch _arch, OpSys _opSys)
-    : ObjectFile(_filename, _fd, _len, _data, _arch, _opSys)
+    : ObjectFile(_filename, _len, _data, _arch, _opSys)
 {
     text.baseAddr = 0;
     text.size = len;
@@ -73,11 +72,6 @@ DtbObject::DtbObject(const std::string &_filename, int _fd,
 
 DtbObject::~DtbObject()
 {
-    if (descriptor >= 0) {
-        ::close(descriptor);
-        descriptor = -1;
-    }
-
     // Make sure to clean up memory properly depending
     // on how buffer was allocated.
     if (fileData && !fileDataMmapped) {
@@ -115,7 +109,10 @@ DtbObject::addBootCmdLine(const char* _args, size_t len)
         // try adding the node by walking dtb tree to proper insertion point
         offset = fdt_path_offset((void*)fdt_buf_w_space, root_path);
         offset = fdt_add_subnode((void*)fdt_buf_w_space, offset, node_name);
-        offset = fdt_path_offset((void*)fdt_buf_w_space, full_path_node_name);
+        // if we successfully add the subnode, get the offset
+        if (offset >= 0)
+          offset = fdt_path_offset((void*)fdt_buf_w_space, full_path_node_name);
+
         if (offset < 0) {
             warn("Error finding or adding \"chosen\" subnode to flattened "
                  "device tree, errno: %d\n", offset);
@@ -174,16 +171,24 @@ DtbObject::findReleaseAddr()
     return rel_addr;
 }
 
+bool
+DtbObject::loadAllSymbols(SymbolTable *symtab, Addr base, Addr offset,
+                          Addr addr_mask)
+{
+    return false;
+}
 
 bool
-DtbObject::loadGlobalSymbols(SymbolTable *symtab, Addr addrMask)
+DtbObject::loadGlobalSymbols(SymbolTable *symtab, Addr base, Addr offset,
+                             Addr addr_mask)
 {
     // nothing to do here
     return false;
 }
 
 bool
-DtbObject::loadLocalSymbols(SymbolTable *symtab, Addr addrMask)
+DtbObject::loadLocalSymbols(SymbolTable *symtab, Addr base, Addr offset,
+                            Addr addr_mask)
 {
     // nothing to do here
     return false;

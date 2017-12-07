@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 ARM Limited
+ * Copyright (c) 2012, 2016 ARM Limited
  * Copyright (c) 2013 Advanced Micro Devices, Inc.
  * All rights reserved
  *
@@ -41,13 +41,17 @@
  * Authors: Kevin Lim
  */
 
-#include "base/misc.hh"
+#include "cpu/thread_context.hh"
+
+#include "arch/kernel_stats.hh"
+#include "base/logging.hh"
 #include "base/trace.hh"
 #include "config/the_isa.hh"
 #include "cpu/base.hh"
 #include "cpu/quiesce_event.hh"
-#include "cpu/thread_context.hh"
 #include "debug/Context.hh"
+#include "debug/Quiesce.hh"
+#include "params/BaseCPU.hh"
 #include "sim/full_system.hh"
 
 void
@@ -70,6 +74,16 @@ ThreadContext::compare(ThreadContext *one, ThreadContext *two)
         TheISA::FloatRegBits t2 = two->readFloatRegBits(i);
         if (t1 != t2)
             panic("Float reg idx %d doesn't match, one: %#x, two: %#x",
+                  i, t1, t2);
+    }
+
+    // Then loop through the vector registers.
+    for (int i = 0; i < TheISA::NumVecRegs; ++i) {
+        RegId rid(VecRegClass, i);
+        const TheISA::VecRegContainer& t1 = one->readVecReg(rid);
+        const TheISA::VecRegContainer& t2 = two->readVecReg(rid);
+        if (t1 != t2)
+            panic("Vec reg idx %d doesn't match, one: %#x, two: %#x",
                   i, t1, t2);
     }
     for (int i = 0; i < TheISA::NumMiscRegs; ++i) {
@@ -95,16 +109,49 @@ ThreadContext::compare(ThreadContext *one, ThreadContext *two)
     if (id1 != id2)
         panic("CPU ids don't match, one: %d, two: %d", id1, id2);
 
-    id1 = one->contextId();
-    id2 = two->contextId();
-    if (id1 != id2)
+    const ContextID cid1 = one->contextId();
+    const ContextID cid2 = two->contextId();
+    if (cid1 != cid2)
         panic("Context ids don't match, one: %d, two: %d", id1, id2);
 
 
 }
 
 void
-serialize(ThreadContext &tc, std::ostream &os)
+ThreadContext::quiesce()
+{
+    if (!getCpuPtr()->params()->do_quiesce)
+        return;
+
+    DPRINTF(Quiesce, "%s: quiesce()\n", getCpuPtr()->name());
+
+    suspend();
+    if (getKernelStats())
+       getKernelStats()->quiesce();
+}
+
+
+void
+ThreadContext::quiesceTick(Tick resume)
+{
+    BaseCPU *cpu = getCpuPtr();
+
+    if (!cpu->params()->do_quiesce)
+        return;
+
+    EndQuiesceEvent *quiesceEvent = getQuiesceEvent();
+
+    cpu->reschedule(quiesceEvent, resume, true);
+
+    DPRINTF(Quiesce, "%s: quiesceTick until %lu\n", cpu->name(), resume);
+
+    suspend();
+    if (getKernelStats())
+        getKernelStats()->quiesce();
+}
+
+void
+serialize(ThreadContext &tc, CheckpointOut &cp)
 {
     using namespace TheISA;
 
@@ -113,7 +160,13 @@ serialize(ThreadContext &tc, std::ostream &os)
         floatRegs[i] = tc.readFloatRegBitsFlat(i);
     // This is a bit ugly, but needed to maintain backwards
     // compatibility.
-    arrayParamOut(os, "floatRegs.i", floatRegs, NumFloatRegs);
+    arrayParamOut(cp, "floatRegs.i", floatRegs, NumFloatRegs);
+
+    std::vector<TheISA::VecRegContainer> vecRegs(NumVecRegs);
+    for (int i = 0; i < NumVecRegs; ++i) {
+        vecRegs[i] = tc.readVecRegFlat(i);
+    }
+    SERIALIZE_CONTAINER(vecRegs);
 
     IntReg intRegs[NumIntRegs];
     for (int i = 0; i < NumIntRegs; ++i)
@@ -127,22 +180,28 @@ serialize(ThreadContext &tc, std::ostream &os)
     SERIALIZE_ARRAY(ccRegs, NumCCRegs);
 #endif
 
-    tc.pcState().serialize(os);
+    tc.pcState().serialize(cp);
 
     // thread_num and cpu_id are deterministic from the config
 }
 
 void
-unserialize(ThreadContext &tc, Checkpoint *cp, const std::string &section)
+unserialize(ThreadContext &tc, CheckpointIn &cp)
 {
     using namespace TheISA;
 
     FloatRegBits floatRegs[NumFloatRegs];
     // This is a bit ugly, but needed to maintain backwards
     // compatibility.
-    arrayParamIn(cp, section, "floatRegs.i", floatRegs, NumFloatRegs);
+    arrayParamIn(cp, "floatRegs.i", floatRegs, NumFloatRegs);
     for (int i = 0; i < NumFloatRegs; ++i)
         tc.setFloatRegBitsFlat(i, floatRegs[i]);
+
+    std::vector<TheISA::VecRegContainer> vecRegs(NumVecRegs);
+    UNSERIALIZE_CONTAINER(vecRegs);
+    for (int i = 0; i < NumVecRegs; ++i) {
+        tc.setVecRegFlat(i, vecRegs[i]);
+    }
 
     IntReg intRegs[NumIntRegs];
     UNSERIALIZE_ARRAY(intRegs, NumIntRegs);
@@ -157,7 +216,7 @@ unserialize(ThreadContext &tc, Checkpoint *cp, const std::string &section)
 #endif
 
     PCState pcState;
-    pcState.unserialize(cp, section);
+    pcState.unserialize(cp);
     tc.pcState(pcState);
 
     // thread_num and cpu_id are deterministic from the config

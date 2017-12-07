@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 ARM Limited
+ * Copyright (c) 2012-2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -12,7 +12,7 @@
  * modified or unmodified, in source code or in binary form.
  *
  * Copyright (c) 2006 The Regents of The University of Michigan
- * Copyright (c) 2010 Advanced Micro Devices, Inc.
+ * Copyright (c) 2010,2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,6 +42,7 @@
  *          Steve Reinhardt
  *          Ali Saidi
  *          Andreas Hansson
+ *          Nikos Nikoleris
  */
 
 /**
@@ -59,7 +60,7 @@
 #include "base/cast.hh"
 #include "base/compiler.hh"
 #include "base/flags.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/printable.hh"
 #include "base/types.hh"
 #include "mem/request.hh"
@@ -69,6 +70,7 @@ class Packet;
 typedef Packet *PacketPtr;
 typedef uint8_t* PacketDataPtr;
 typedef std::list<PacketPtr> PacketList;
+typedef uint64_t PacketId;
 
 class MemCmd
 {
@@ -86,13 +88,15 @@ class MemCmd
         ReadRespWithInvalidate,
         WriteReq,
         WriteResp,
-        Writeback,
+        WritebackDirty,
+        WritebackClean,
+        WriteClean,            // writes dirty data below without evicting
+        CleanEvict,
         SoftPFReq,
         HardPFReq,
         SoftPFResp,
         HardPFResp,
-        WriteInvalidateReq,
-        WriteInvalidateResp,
+        WriteLineReq,
         UpgradeReq,
         SCUpgradeReq,           // Special "weak" upgrade for StoreCond
         UpgradeResp,
@@ -100,6 +104,8 @@ class MemCmd
         UpgradeFailResp,        // Valid for SCUpgradeReq only
         ReadExReq,
         ReadExResp,
+        ReadCleanReq,
+        ReadSharedReq,
         LoadLockedReq,
         StoreCondReq,
         StoreCondFailReq,       // Failed StoreCondReq in MSHR (never sent)
@@ -108,6 +114,12 @@ class MemCmd
         SwapResp,
         MessageReq,
         MessageResp,
+        MemFenceReq,
+        MemFenceResp,
+        CleanSharedReq,
+        CleanSharedResp,
+        CleanInvalidReq,
+        CleanInvalidResp,
         // Error responses
         // @TODO these should be classified as responses rather than
         // requests; coding them as requests initially for backwards
@@ -119,7 +131,8 @@ class MemCmd
         // Fake simulator-only commands
         PrintReq,       // Print state matching address
         FlushReq,      //request for a cache flush
-        InvalidationReq,   // request for address to be invalidated from lsq
+        InvalidateReq,   // request for address to be invalidated
+        InvalidateResp,
         NUM_MEM_CMDS
     };
 
@@ -133,10 +146,12 @@ class MemCmd
         IsWrite,        //!< Data flows from requester to responder
         IsUpgrade,
         IsInvalidate,
-        NeedsExclusive, //!< Requires exclusive copy to complete in-cache
+        IsClean,        //!< Cleans any existing dirty blocks
+        NeedsWritable,  //!< Requires writable copy to complete in-cache
         IsRequest,      //!< Issued by requester
         IsResponse,     //!< Issue by responder
         NeedsResponse,  //!< Requester needs response from target
+        IsEviction,
         IsSWPrefetch,
         IsHWPrefetch,
         IsLlsc,         //!< Alpha/MIPS LL or SC access
@@ -144,6 +159,7 @@ class MemCmd
         IsError,        //!< Error response
         IsPrint,        //!< Print state matching address (for debugging)
         IsFlush,        //!< Flush the address from caches
+        FromCache,      //!< Request originated from a caching agent
         NUM_COMMAND_ATTRIBUTES
     };
 
@@ -182,11 +198,18 @@ class MemCmd
     bool isUpgrade() const         { return testCmdAttrib(IsUpgrade); }
     bool isRequest() const         { return testCmdAttrib(IsRequest); }
     bool isResponse() const        { return testCmdAttrib(IsResponse); }
-    bool needsExclusive() const    { return testCmdAttrib(NeedsExclusive); }
+    bool needsWritable() const     { return testCmdAttrib(NeedsWritable); }
     bool needsResponse() const     { return testCmdAttrib(NeedsResponse); }
     bool isInvalidate() const      { return testCmdAttrib(IsInvalidate); }
-    bool isWriteInvalidate() const { return testCmdAttrib(IsWrite) &&
-                                            testCmdAttrib(IsInvalidate); }
+    bool isEviction() const        { return testCmdAttrib(IsEviction); }
+    bool isClean() const           { return testCmdAttrib(IsClean); }
+    bool fromCache() const         { return testCmdAttrib(FromCache); }
+
+    /**
+     * A writeback is an eviction that carries data.
+     */
+    bool isWriteback() const       { return testCmdAttrib(IsEviction) &&
+                                            testCmdAttrib(HasData); }
 
     /**
      * Check if this particular packet type carries payload data. Note
@@ -203,7 +226,7 @@ class MemCmd
     bool isPrint() const        { return testCmdAttrib(IsPrint); }
     bool isFlush() const        { return testCmdAttrib(IsFlush); }
 
-    const Command
+    Command
     responseCommand() const
     {
         return commandInfo[cmd].response;
@@ -235,35 +258,56 @@ class Packet : public Printable
     typedef ::Flags<FlagsType> Flags;
 
   private:
-    static const FlagsType PUBLIC_FLAGS           = 0x00000000;
-    static const FlagsType PRIVATE_FLAGS          = 0x00007F0F;
-    static const FlagsType COPY_FLAGS             = 0x0000000F;
 
-    static const FlagsType SHARED                 = 0x00000001;
-    // Special control flags
-    /// Special timing-mode atomic snoop for multi-level coherence.
-    static const FlagsType EXPRESS_SNOOP          = 0x00000002;
-    /// Does supplier have exclusive copy?
-    /// Useful for multi-level coherence.
-    static const FlagsType SUPPLY_EXCLUSIVE       = 0x00000004;
-    // Snoop response flags
-    static const FlagsType MEM_INHIBIT            = 0x00000008;
-    /// Are the 'addr' and 'size' fields valid?
-    static const FlagsType VALID_ADDR             = 0x00000100;
-    static const FlagsType VALID_SIZE             = 0x00000200;
-    /// Is the data pointer set to a value that shouldn't be freed
-    /// when the packet is destroyed?
-    static const FlagsType STATIC_DATA            = 0x00001000;
-    /// The data pointer points to a value that should be freed when
-    /// the packet is destroyed. The pointer is assumed to be pointing
-    /// to an array, and delete [] is consequently called
-    static const FlagsType DYNAMIC_DATA           = 0x00002000;
-    /// suppress the error if this packet encounters a functional
-    /// access failure.
-    static const FlagsType SUPPRESS_FUNC_ERROR    = 0x00008000;
-    // Signal block present to squash prefetch and cache evict packets
-    // through express snoop flag
-    static const FlagsType BLOCK_CACHED          = 0x00010000;
+    enum : FlagsType {
+        // Flags to transfer across when copying a packet
+        COPY_FLAGS             = 0x0000003F,
+
+        // Does this packet have sharers (which means it should not be
+        // considered writable) or not. See setHasSharers below.
+        HAS_SHARERS            = 0x00000001,
+
+        // Special control flags
+        /// Special timing-mode atomic snoop for multi-level coherence.
+        EXPRESS_SNOOP          = 0x00000002,
+
+        /// Allow a responding cache to inform the cache hierarchy
+        /// that it had a writable copy before responding. See
+        /// setResponderHadWritable below.
+        RESPONDER_HAD_WRITABLE = 0x00000004,
+
+        // Snoop co-ordination flag to indicate that a cache is
+        // responding to a snoop. See setCacheResponding below.
+        CACHE_RESPONDING       = 0x00000008,
+
+        // The writeback/writeclean should be propagated further
+        // downstream by the receiver
+        WRITE_THROUGH          = 0x00000010,
+
+        // Response co-ordination flag for cache maintenance
+        // operations
+        SATISFIED              = 0x00000020,
+
+        /// Are the 'addr' and 'size' fields valid?
+        VALID_ADDR             = 0x00000100,
+        VALID_SIZE             = 0x00000200,
+
+        /// Is the data pointer set to a value that shouldn't be freed
+        /// when the packet is destroyed?
+        STATIC_DATA            = 0x00001000,
+        /// The data pointer points to a value that should be freed when
+        /// the packet is destroyed. The pointer is assumed to be pointing
+        /// to an array, and delete [] is consequently called
+        DYNAMIC_DATA           = 0x00002000,
+
+        /// suppress the error if this packet encounters a functional
+        /// access failure.
+        SUPPRESS_FUNC_ERROR    = 0x00008000,
+
+        // Signal block present to squash prefetch and cache evict packets
+        // through express snoop flag
+        BLOCK_CACHED          = 0x00010000
+    };
 
     Flags flags;
 
@@ -272,6 +316,8 @@ class Packet : public Printable
 
     /// The command field of the packet.
     MemCmd cmd;
+
+    const PacketId id;
 
     /// A pointer to the original request.
     const RequestPtr req;
@@ -297,14 +343,6 @@ class Packet : public Printable
     unsigned size;
 
     /**
-     * The original value of the command field.  Only valid when the
-     * current command field is an error condition; in that case, the
-     * previous contents of the command field are copied here.  This
-     * field is *not* set on non-error responses.
-     */
-    MemCmd origCmd;
-
-    /**
      * Track the bytes found that satisfy a functional read.
      */
     std::vector<bool> bytesValid;
@@ -319,6 +357,14 @@ class Packet : public Printable
      * a 32-bit unsigned should be sufficient.
      */
     uint32_t headerDelay;
+
+    /**
+     * Keep track of the extra delay incurred by snooping upwards
+     * before sending a request down the memory system. This is used
+     * by the coherent crossbar to account for the additional request
+     * delay.
+     */
+    uint32_t snoopDelay;
 
     /**
      * The extra pipelining delay from seeing the packet until the end of
@@ -477,37 +523,152 @@ class Packet : public Printable
     bool isUpgrade()  const          { return cmd.isUpgrade(); }
     bool isRequest() const           { return cmd.isRequest(); }
     bool isResponse() const          { return cmd.isResponse(); }
-    bool needsExclusive() const      { return cmd.needsExclusive(); }
+    bool needsWritable() const
+    {
+        // we should never check if a response needsWritable, the
+        // request has this flag, and for a response we should rather
+        // look at the hasSharers flag (if not set, the response is to
+        // be considered writable)
+        assert(isRequest());
+        return cmd.needsWritable();
+    }
     bool needsResponse() const       { return cmd.needsResponse(); }
     bool isInvalidate() const        { return cmd.isInvalidate(); }
-    bool isWriteInvalidate() const   { return cmd.isWriteInvalidate(); }
+    bool isEviction() const          { return cmd.isEviction(); }
+    bool isClean() const             { return cmd.isClean(); }
+    bool fromCache() const           { return cmd.fromCache(); }
+    bool isWriteback() const         { return cmd.isWriteback(); }
     bool hasData() const             { return cmd.hasData(); }
+    bool hasRespData() const
+    {
+        MemCmd resp_cmd = cmd.responseCommand();
+        return resp_cmd.hasData();
+    }
     bool isLLSC() const              { return cmd.isLLSC(); }
     bool isError() const             { return cmd.isError(); }
     bool isPrint() const             { return cmd.isPrint(); }
     bool isFlush() const             { return cmd.isFlush(); }
 
-    // Snoop flags
-    void assertMemInhibit()
+    //@{
+    /// Snoop flags
+    /**
+     * Set the cacheResponding flag. This is used by the caches to
+     * signal another cache that they are responding to a request. A
+     * cache will only respond to snoops if it has the line in either
+     * Modified or Owned state. Note that on snoop hits we always pass
+     * the line as Modified and never Owned. In the case of an Owned
+     * line we proceed to invalidate all other copies.
+     *
+     * On a cache fill (see Cache::handleFill), we check hasSharers
+     * first, ignoring the cacheResponding flag if hasSharers is set.
+     * A line is consequently allocated as:
+     *
+     * hasSharers cacheResponding state
+     * true       false           Shared
+     * true       true            Shared
+     * false      false           Exclusive
+     * false      true            Modified
+     */
+    void setCacheResponding()
     {
         assert(isRequest());
-        assert(!flags.isSet(MEM_INHIBIT));
-        flags.set(MEM_INHIBIT);
+        assert(!flags.isSet(CACHE_RESPONDING));
+        flags.set(CACHE_RESPONDING);
     }
-    bool memInhibitAsserted() const { return flags.isSet(MEM_INHIBIT); }
-    void assertShared()             { flags.set(SHARED); }
-    bool sharedAsserted() const     { return flags.isSet(SHARED); }
+    bool cacheResponding() const { return flags.isSet(CACHE_RESPONDING); }
+    /**
+     * On fills, the hasSharers flag is used by the caches in
+     * combination with the cacheResponding flag, as clarified
+     * above. If the hasSharers flag is not set, the packet is passing
+     * writable. Thus, a response from a memory passes the line as
+     * writable by default.
+     *
+     * The hasSharers flag is also used by upstream caches to inform a
+     * downstream cache that they have the block (by calling
+     * setHasSharers on snoop request packets that hit in upstream
+     * cachs tags or MSHRs). If the snoop packet has sharers, a
+     * downstream cache is prevented from passing a dirty line upwards
+     * if it was not explicitly asked for a writable copy. See
+     * Cache::satisfyCpuSideRequest.
+     *
+     * The hasSharers flag is also used on writebacks, in
+     * combination with the WritbackClean or WritebackDirty commands,
+     * to allocate the block downstream either as:
+     *
+     * command        hasSharers state
+     * WritebackDirty false      Modified
+     * WritebackDirty true       Owned
+     * WritebackClean false      Exclusive
+     * WritebackClean true       Shared
+     */
+    void setHasSharers()    { flags.set(HAS_SHARERS); }
+    bool hasSharers() const { return flags.isSet(HAS_SHARERS); }
+    //@}
 
-    // Special control flags
-    void setExpressSnoop()          { flags.set(EXPRESS_SNOOP); }
-    bool isExpressSnoop() const     { return flags.isSet(EXPRESS_SNOOP); }
-    void setSupplyExclusive()       { flags.set(SUPPLY_EXCLUSIVE); }
-    void clearSupplyExclusive()     { flags.clear(SUPPLY_EXCLUSIVE); }
-    bool isSupplyExclusive() const  { return flags.isSet(SUPPLY_EXCLUSIVE); }
+    /**
+     * The express snoop flag is used for two purposes. Firstly, it is
+     * used to bypass flow control for normal (non-snoop) requests
+     * going downstream in the memory system. In cases where a cache
+     * is responding to a snoop from another cache (it had a dirty
+     * line), but the line is not writable (and there are possibly
+     * other copies), the express snoop flag is set by the downstream
+     * cache to invalidate all other copies in zero time. Secondly,
+     * the express snoop flag is also set to be able to distinguish
+     * snoop packets that came from a downstream cache, rather than
+     * snoop packets from neighbouring caches.
+     */
+    void setExpressSnoop()      { flags.set(EXPRESS_SNOOP); }
+    bool isExpressSnoop() const { return flags.isSet(EXPRESS_SNOOP); }
+
+    /**
+     * On responding to a snoop request (which only happens for
+     * Modified or Owned lines), make sure that we can transform an
+     * Owned response to a Modified one. If this flag is not set, the
+     * responding cache had the line in the Owned state, and there are
+     * possibly other Shared copies in the memory system. A downstream
+     * cache helps in orchestrating the invalidation of these copies
+     * by sending out the appropriate express snoops.
+     */
+    void setResponderHadWritable()
+    {
+        assert(cacheResponding());
+        assert(!responderHadWritable());
+        flags.set(RESPONDER_HAD_WRITABLE);
+    }
+    bool responderHadWritable() const
+    { return flags.isSet(RESPONDER_HAD_WRITABLE); }
+
+    /**
+     * A writeback/writeclean cmd gets propagated further downstream
+     * by the receiver when the flag is set.
+     */
+    void setWriteThrough()
+    {
+        assert(cmd.isWrite() &&
+               (cmd.isEviction() || cmd == MemCmd::WriteClean));
+        flags.set(WRITE_THROUGH);
+    }
+    void clearWriteThrough() { flags.clear(WRITE_THROUGH); }
+    bool writeThrough() const { return flags.isSet(WRITE_THROUGH); }
+
+    /**
+     * Set when a request hits in a cache and the cache is not going
+     * to respond. This is used by the crossbar to coordinate
+     * responses for cache maintenance operations.
+     */
+    void setSatisfied()
+    {
+        assert(cmd.isClean());
+        assert(!flags.isSet(SATISFIED));
+        flags.set(SATISFIED);
+    }
+    bool satisfied() const { return flags.isSet(SATISFIED); }
+
     void setSuppressFuncError()     { flags.set(SUPPRESS_FUNC_ERROR); }
     bool suppressFuncError() const  { return flags.isSet(SUPPRESS_FUNC_ERROR); }
     void setBlockCached()          { flags.set(BLOCK_CACHED); }
     bool isBlockCached() const     { return flags.isSet(BLOCK_CACHED); }
+    void clearBlockCached()        { flags.clear(BLOCK_CACHED); }
 
     // Network error conditions... encapsulate them as methods since
     // their encoding keeps changing (from result field to command
@@ -519,7 +680,6 @@ class Packet : public Printable
         cmd = MemCmd::BadAddressError;
     }
 
-    bool hadBadAddress() const { return cmd == MemCmd::BadAddressError; }
     void copyError(Packet *pkt) { assert(pkt->isError()); cmd = pkt->cmd; }
 
     Addr getAddr() const { assert(flags.isSet(VALID_ADDR)); return addr; }
@@ -533,7 +693,16 @@ class Packet : public Printable
     void setAddr(Addr _addr) { assert(flags.isSet(VALID_ADDR)); addr = _addr; }
 
     unsigned getSize() const  { assert(flags.isSet(VALID_SIZE)); return size; }
-    Addr getOffset(int blkSize) const { return getAddr() & (Addr)(blkSize - 1); }
+
+    Addr getOffset(unsigned int blk_size) const
+    {
+        return getAddr() & Addr(blk_size - 1);
+    }
+
+    Addr getBlockAddr(unsigned int blk_size) const
+    {
+        return getAddr() & ~(Addr(blk_size - 1));
+    }
 
     bool isSecure() const
     {
@@ -542,8 +711,14 @@ class Packet : public Printable
     }
 
     /**
+     * Accessor function to atomic op.
+     */
+    AtomicOpFunctor *getAtomicOp() const { return req->getAtomicOpFunctor(); }
+    bool isAtomicOp() const { return req->isAtomic(); }
+
+    /**
      * It has been determined that the SC packet should successfully update
-     * memory.  Therefore, convert this SC packet to a normal write.
+     * memory. Therefore, convert this SC packet to a normal write.
      */
     void
     convertScToWrite()
@@ -554,8 +729,8 @@ class Packet : public Printable
     }
 
     /**
-     * When ruby is in use, Ruby will monitor the cache line and thus M5 
-     * phys memory should treat LL ops as normal reads. 
+     * When ruby is in use, Ruby will monitor the cache line and the
+     * phys memory should treat LL ops as normal reads.
      */
     void
     convertLlToRead()
@@ -566,14 +741,14 @@ class Packet : public Printable
     }
 
     /**
-     * Constructor.  Note that a Request object must be constructed
+     * Constructor. Note that a Request object must be constructed
      * first, but the Requests's physical address and size fields need
      * not be valid. The command must be supplied.
      */
     Packet(const RequestPtr _req, MemCmd _cmd)
-        :  cmd(_cmd), req(_req), data(nullptr), addr(0), _isSecure(false),
-           size(0), headerDelay(0), payloadDelay(0),
-           senderState(NULL)
+        :  cmd(_cmd), id((PacketId)_req), req(_req), data(nullptr), addr(0),
+           _isSecure(false), size(0), headerDelay(0), snoopDelay(0),
+           payloadDelay(0), senderState(NULL)
     {
         if (req->hasPaddr()) {
             addr = req->getPaddr();
@@ -591,10 +766,10 @@ class Packet : public Printable
      * a request that is for a whole block, not the address from the
      * req.  this allows for overriding the size/addr of the req.
      */
-    Packet(const RequestPtr _req, MemCmd _cmd, int _blkSize)
-        :  cmd(_cmd), req(_req), data(nullptr), addr(0), _isSecure(false),
-           headerDelay(0), payloadDelay(0),
-           senderState(NULL)
+    Packet(const RequestPtr _req, MemCmd _cmd, int _blkSize, PacketId _id = 0)
+        :  cmd(_cmd), id(_id ? _id : (PacketId)_req), req(_req), data(nullptr),
+           addr(0), _isSecure(false), headerDelay(0), snoopDelay(0),
+           payloadDelay(0), senderState(NULL)
     {
         if (req->hasPaddr()) {
             addr = req->getPaddr() & ~(_blkSize - 1);
@@ -612,12 +787,13 @@ class Packet : public Printable
      * less than that of the original packet.  In this case the new
      * packet should allocate its own data.
      */
-    Packet(PacketPtr pkt, bool clear_flags, bool alloc_data)
-        :  cmd(pkt->cmd), req(pkt->req),
+    Packet(const PacketPtr pkt, bool clear_flags, bool alloc_data)
+        :  cmd(pkt->cmd), id(pkt->id), req(pkt->req),
            data(nullptr),
            addr(pkt->addr), _isSecure(pkt->_isSecure), size(pkt->size),
            bytesValid(pkt->bytesValid),
            headerDelay(pkt->headerDelay),
+           snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
            senderState(pkt->senderState)
     {
@@ -667,7 +843,12 @@ class Packet : public Printable
             return MemCmd::StoreCondReq;
         else if (req->isSwap())
             return MemCmd::SwapReq;
-        else
+        else if (req->isCacheInvalidate()) {
+          return req->isCacheClean() ? MemCmd::CleanInvalidReq :
+              MemCmd::InvalidateReq;
+        } else if (req->isCacheClean()) {
+            return MemCmd::CleanSharedReq;
+        } else
             return MemCmd::WriteReq;
     }
 
@@ -716,7 +897,6 @@ class Packet : public Printable
     {
         assert(needsResponse());
         assert(isRequest());
-        origCmd = cmd;
         cmd = cmd.responseCommand();
 
         // responses are never express, even if the snoop that
@@ -757,6 +937,12 @@ class Packet : public Printable
         flags.set(VALID_SIZE);
     }
 
+
+  public:
+    /**
+     * @{
+     * @name Data accessor mehtods
+     */
 
     /**
      * Set the data pointer to the following value that should not be
@@ -836,14 +1022,49 @@ class Packet : public Printable
     }
 
     /**
-     * return the value of what is pointed to in the packet.
+     * Get the data in the packet byte swapped from big endian to
+     * host endian.
+     */
+    template <typename T>
+    T getBE() const;
+
+    /**
+     * Get the data in the packet byte swapped from little endian to
+     * host endian.
+     */
+    template <typename T>
+    T getLE() const;
+
+    /**
+     * Get the data in the packet byte swapped from the specified
+     * endianness.
+     */
+    template <typename T>
+    T get(ByteOrder endian) const;
+
+    /**
+     * Get the data in the packet byte swapped from guest to host
+     * endian.
      */
     template <typename T>
     T get() const;
 
+    /** Set the value in the data pointer to v as big endian. */
+    template <typename T>
+    void setBE(T v);
+
+    /** Set the value in the data pointer to v as little endian. */
+    template <typename T>
+    void setLE(T v);
+
     /**
-     * set the value in the data pointer to v.
+     * Set the value in the data pointer to v using the specified
+     * endianness.
      */
+    template <typename T>
+    void set(T v, ByteOrder endian);
+
+    /** Set the value in the data pointer to v as guest endian. */
     template <typename T>
     void set(T v);
 
@@ -911,11 +1132,27 @@ class Packet : public Printable
     void
     allocate()
     {
-        assert(flags.noneSet(STATIC_DATA|DYNAMIC_DATA));
-        flags.set(DYNAMIC_DATA);
-        data = new uint8_t[getSize()];
+        // if either this command or the response command has a data
+        // payload, actually allocate space
+        if (hasData() || hasRespData()) {
+            assert(flags.noneSet(STATIC_DATA|DYNAMIC_DATA));
+            flags.set(DYNAMIC_DATA);
+            data = new uint8_t[getSize()];
+        }
     }
 
+    /** @} */
+
+  private: // Private data accessor methods
+    /** Get the data in the packet without byte swapping. */
+    template <typename T>
+    T getRaw() const;
+
+    /** Set the value in the data pointer to v without byte swapping. */
+    template <typename T>
+    void setRaw(T v);
+
+  public:
     /**
      * Check a functional request against a memory value stored in
      * another packet (i.e. an in-transit request or
@@ -934,6 +1171,26 @@ class Packet : public Printable
                                other->getSize(),
                                other->hasData() ?
                                other->getPtr<uint8_t>() : NULL);
+    }
+
+    /**
+     * Does the request need to check for cached copies of the same block
+     * in the memory hierarchy above.
+     **/
+    bool
+    mustCheckAbove() const
+    {
+        return cmd == MemCmd::HardPFReq || isEviction();
+    }
+
+    /**
+     * Is this packet a clean eviction, including both actual clean
+     * evict packets, but also clean writebacks.
+     */
+    bool
+    isCleanEviction() const
+    {
+        return cmd == MemCmd::CleanEvict || cmd == MemCmd::WritebackClean;
     }
 
     /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2015 ARM Limited
+ * Copyright (c) 2012, 2015, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -37,6 +37,8 @@
  * Authors: Andreas Sandberg
  */
 
+#include "cpu/kvm/base.hh"
+
 #include <linux/kvm.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -48,7 +50,6 @@
 
 #include "arch/mmapped_ipr.hh"
 #include "arch/utility.hh"
-#include "cpu/kvm/base.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/Drain.hh"
 #include "debug/Kvm.hh"
@@ -58,27 +59,26 @@
 #include "sim/process.hh"
 #include "sim/system.hh"
 
-#include <signal.h>
-
 /* Used by some KVM macros */
 #define PAGE_SIZE pageSize
 
 BaseKvmCPU::BaseKvmCPU(BaseKvmCPUParams *params)
     : BaseCPU(params),
-      vm(*params->kvmVM),
+      vm(*params->system->getKvmVM()),
       _status(Idle),
       dataPort(name() + ".dcache_port", this),
       instPort(name() + ".icache_port", this),
+      alwaysSyncTC(params->alwaysSyncTC),
       threadContextDirty(true),
       kvmStateDirty(false),
       vcpuID(vm.allocVCPUID()), vcpuFD(-1), vcpuMMapSize(0),
       _kvmRun(NULL), mmioRing(NULL),
       pageSize(sysconf(_SC_PAGE_SIZE)),
-      tickEvent(*this),
+      tickEvent([this]{ tick(); }, "BaseKvmCPU tick",
+                false, Event::CPU_Tick_Pri),
       activeInstPeriod(0),
       perfControlledByTimer(params->usePerfOverflow),
       hostFactor(params->hostFactor),
-      drainManager(NULL),
       ctrInsts(0)
 {
     if (pageSize == -1)
@@ -126,7 +126,7 @@ BaseKvmCPU::startup()
     const BaseKvmCPUParams * const p(
         dynamic_cast<const BaseKvmCPUParams *>(params()));
 
-    Kvm &kvm(vm.kvm);
+    Kvm &kvm(*vm.kvm);
 
     BaseCPU::startup();
 
@@ -165,9 +165,78 @@ BaseKvmCPU::startup()
     thread->startup();
 
     Event *startupEvent(
-        new EventWrapper<BaseKvmCPU,
-                         &BaseKvmCPU::startupThread>(this, true));
+        new EventFunctionWrapper([this]{ startupThread(); }, name(), true));
     schedule(startupEvent, curTick());
+}
+
+BaseKvmCPU::Status
+BaseKvmCPU::KVMCpuPort::nextIOState() const
+{
+    return (activeMMIOReqs || pendingMMIOPkts.size())
+        ? RunningMMIOPending : RunningServiceCompletion;
+}
+
+Tick
+BaseKvmCPU::KVMCpuPort::submitIO(PacketPtr pkt)
+{
+    if (cpu->system->isAtomicMode()) {
+        Tick delay = sendAtomic(pkt);
+        delete pkt->req;
+        delete pkt;
+        return delay;
+    } else {
+        if (pendingMMIOPkts.empty() && sendTimingReq(pkt)) {
+            activeMMIOReqs++;
+        } else {
+            pendingMMIOPkts.push(pkt);
+        }
+        // Return value is irrelevant for timing-mode accesses.
+        return 0;
+    }
+}
+
+bool
+BaseKvmCPU::KVMCpuPort::recvTimingResp(PacketPtr pkt)
+{
+    DPRINTF(KvmIO, "KVM: Finished timing request\n");
+
+    delete pkt->req;
+    delete pkt;
+    activeMMIOReqs--;
+
+    // We can switch back into KVM when all pending and in-flight MMIO
+    // operations have completed.
+    if (!(activeMMIOReqs || pendingMMIOPkts.size())) {
+        DPRINTF(KvmIO, "KVM: Finished all outstanding timing requests\n");
+        cpu->finishMMIOPending();
+    }
+    return true;
+}
+
+void
+BaseKvmCPU::KVMCpuPort::recvReqRetry()
+{
+    DPRINTF(KvmIO, "KVM: Retry for timing request\n");
+
+    assert(pendingMMIOPkts.size());
+
+    // Assuming that we can issue infinite requests this cycle is a bit
+    // unrealistic, but it's not worth modeling something more complex in
+    // KVM.
+    while (pendingMMIOPkts.size() && sendTimingReq(pendingMMIOPkts.front())) {
+        pendingMMIOPkts.pop();
+        activeMMIOReqs++;
+    }
+}
+
+void
+BaseKvmCPU::finishMMIOPending()
+{
+    assert(_status = RunningMMIOPending);
+    assert(!tickEvent.scheduled());
+
+    _status = RunningServiceCompletion;
+    schedule(tickEvent, nextCycle());
 }
 
 void
@@ -259,7 +328,7 @@ BaseKvmCPU::regStats()
 }
 
 void
-BaseKvmCPU::serializeThread(std::ostream &os, ThreadID tid)
+BaseKvmCPU::serializeThread(CheckpointOut &cp, ThreadID tid) const
 {
     if (DTRACE(Checkpoint)) {
         DPRINTF(Checkpoint, "KVM: Serializing thread %i:\n", tid);
@@ -268,28 +337,34 @@ BaseKvmCPU::serializeThread(std::ostream &os, ThreadID tid)
 
     assert(tid == 0);
     assert(_status == Idle);
-    thread->serialize(os);
+    thread->serialize(cp);
 }
 
 void
-BaseKvmCPU::unserializeThread(Checkpoint *cp, const std::string &section,
-                              ThreadID tid)
+BaseKvmCPU::unserializeThread(CheckpointIn &cp, ThreadID tid)
 {
     DPRINTF(Checkpoint, "KVM: Unserialize thread %i:\n", tid);
 
     assert(tid == 0);
     assert(_status == Idle);
-    thread->unserialize(cp, section);
+    thread->unserialize(cp);
     threadContextDirty = true;
 }
 
-unsigned int
-BaseKvmCPU::drain(DrainManager *dm)
+DrainState
+BaseKvmCPU::drain()
 {
     if (switchedOut())
-        return 0;
+        return DrainState::Drained;
 
     DPRINTF(Drain, "BaseKvmCPU::drain\n");
+
+    // The event queue won't be locked when calling drain since that's
+    // not done from an event. Lock the event queue here to make sure
+    // that scoped migrations continue to work if we need to
+    // synchronize the thread context.
+    std::lock_guard<EventQueue> lock(*this->eventQueue());
+
     switch (_status) {
       case Running:
         // The base KVM code is normally ready when it is in the
@@ -297,10 +372,8 @@ BaseKvmCPU::drain(DrainManager *dm)
         // of a different opinion. This may happen when the CPU been
         // notified of an event that hasn't been accepted by the vCPU
         // yet.
-        if (!archIsDrained()) {
-            drainManager = dm;
-            return 1;
-        }
+        if (!archIsDrained())
+            return DrainState::Draining;
 
         // The state of the CPU is consistent, so we don't need to do
         // anything special to drain it. We simply de-schedule the
@@ -319,7 +392,7 @@ BaseKvmCPU::drain(DrainManager *dm)
         // switch CPUs or checkpoint the CPU.
         syncThreadContext();
 
-        return 0;
+        return DrainState::Drained;
 
       case RunningServiceCompletion:
         // The CPU has just requested a service that was handled in
@@ -328,22 +401,24 @@ BaseKvmCPU::drain(DrainManager *dm)
         // update the register state ourselves instead of letting KVM
         // handle it, but that would be tricky. Instead, we enter KVM
         // and let it do its stuff.
-        drainManager = dm;
-
         DPRINTF(Drain, "KVM CPU is waiting for service completion, "
                 "requesting drain.\n");
-        return 1;
+        return DrainState::Draining;
+
+      case RunningMMIOPending:
+        // We need to drain since there are in-flight timing accesses
+        DPRINTF(Drain, "KVM CPU is waiting for timing accesses to complete, "
+                "requesting drain.\n");
+        return DrainState::Draining;
 
       case RunningService:
         // We need to drain since the CPU is waiting for service (e.g., MMIOs)
-        drainManager = dm;
-
         DPRINTF(Drain, "KVM CPU is waiting for service, requesting drain.\n");
-        return 1;
+        return DrainState::Draining;
 
       default:
         panic("KVM: Unhandled CPU state in drain()\n");
-        return 0;
+        return DrainState::Drained;
     }
 }
 
@@ -367,6 +442,29 @@ BaseKvmCPU::drainResume()
         _status = Running;
     } else {
         _status = Idle;
+    }
+}
+
+void
+BaseKvmCPU::notifyFork()
+{
+    // We should have drained prior to forking, which means that the
+    // tick event shouldn't be scheduled and the CPU is idle.
+    assert(!tickEvent.scheduled());
+    assert(_status == Idle);
+
+    if (vcpuFD != -1) {
+        if (close(vcpuFD) == -1)
+            warn("kvm CPU: notifyFork failed to close vcpuFD\n");
+
+        if (_kvmRun)
+            munmap(_kvmRun, vcpuMMapSize);
+
+        vcpuFD = -1;
+        _kvmRun = NULL;
+
+        hwInstructions.detach();
+        hwCycles.detach();
     }
 }
 
@@ -409,14 +507,14 @@ BaseKvmCPU::takeOverFrom(BaseCPU *cpu)
 void
 BaseKvmCPU::verifyMemoryMode() const
 {
-    if (!(system->isAtomicMode() && system->bypassCaches())) {
+    if (!(system->bypassCaches())) {
         fatal("The KVM-based CPUs requires the memory system to be in the "
-              "'atomic_noncaching' mode.\n");
+              "'noncaching' mode.\n");
     }
 }
 
 void
-BaseKvmCPU::wakeup()
+BaseKvmCPU::wakeup(ThreadID tid)
 {
     DPRINTF(Kvm, "wakeup()\n");
     // This method might have been called from another
@@ -486,6 +584,7 @@ BaseKvmCPU::haltContext(ThreadID thread_num)
 {
     // for now, these are equivalent
     suspendContext(thread_num);
+    updateCycleCounters(BaseCPU::CPU_STATE_SLEEP);
 }
 
 ThreadContext *
@@ -511,7 +610,7 @@ BaseKvmCPU::totalOps() const
 }
 
 void
-BaseKvmCPU::dump()
+BaseKvmCPU::dump() const
 {
     inform("State dumping not implemented.");
 }
@@ -520,7 +619,7 @@ void
 BaseKvmCPU::tick()
 {
     Tick delay(0);
-    assert(_status != Idle);
+    assert(_status != Idle && _status != RunningMMIOPending);
 
     switch (_status) {
       case RunningService:
@@ -542,6 +641,9 @@ BaseKvmCPU::tick()
               nextInstEvent > ctrInsts ?
               curEventQueue()->nextTick() - curTick() : 0);
 
+          if (alwaysSyncTC)
+              threadContextDirty = true;
+
           // We might need to update the KVM state.
           syncKvmState();
 
@@ -552,7 +654,7 @@ BaseKvmCPU::tick()
               setupInstStop();
 
           DPRINTF(KvmRun, "Entering KVM...\n");
-          if (drainManager) {
+          if (drainState() == DrainState::Draining) {
               // Force an immediate exit from KVM after completing
               // pending operations. The architecture-specific code
               // takes care to run until it is in a state where it can
@@ -572,6 +674,9 @@ BaseKvmCPU::tick()
           // context from KVM if we want to access it. Flag the KVM state as
           // dirty with respect to the cached thread context.
           kvmStateDirty = true;
+
+          if (alwaysSyncTC)
+              syncThreadContext();
 
           // Enter into the RunningService state unless the
           // simulation was stopped by a timer.
@@ -598,7 +703,7 @@ BaseKvmCPU::tick()
     }
 
     // Schedule a new tick if we are still running
-    if (_status != Idle)
+    if (_status != Idle && _status != RunningMMIOPending)
         schedule(tickEvent, clockEdge(ticksToCycles(delay)));
 }
 
@@ -607,8 +712,9 @@ BaseKvmCPU::kvmRunDrain()
 {
     // By default, the only thing we need to drain is a pending IO
     // operation which assumes that we are in the
-    // RunningServiceCompletion state.
-    assert(_status == RunningServiceCompletion);
+    // RunningServiceCompletion or RunningMMIOPending state.
+    assert(_status == RunningServiceCompletion ||
+           _status == RunningMMIOPending);
 
     // Deliver the data from the pending IO operation and immediately
     // exit.
@@ -625,6 +731,9 @@ Tick
 BaseKvmCPU::kvmRun(Tick ticks)
 {
     Tick ticksExecuted;
+    fatal_if(vcpuFD == -1,
+             "Trying to run a KVM CPU in a forked child process. "
+             "This is not supported.\n");
     DPRINTF(KvmRun, "KVM: Executing for %i ticks\n", ticks);
 
     if (ticks == 0) {
@@ -897,9 +1006,12 @@ BaseKvmCPU::handleKvmExit()
         return handleKvmExitException();
 
       case KVM_EXIT_IO:
-        _status = RunningServiceCompletion;
+      {
         ++numIO;
-        return handleKvmExitIO();
+        Tick ticks = handleKvmExitIO();
+        _status = dataPort.nextIOState();
+        return ticks;
+      }
 
       case KVM_EXIT_HYPERCALL:
         ++numHypercalls;
@@ -917,15 +1029,21 @@ BaseKvmCPU::handleKvmExit()
         return 0;
 
       case KVM_EXIT_MMIO:
-        _status = RunningServiceCompletion;
+      {
         /* Service memory mapped IO requests */
         DPRINTF(KvmIO, "KVM: Handling MMIO (w: %u, addr: 0x%x, len: %u)\n",
                 _kvmRun->mmio.is_write,
                 _kvmRun->mmio.phys_addr, _kvmRun->mmio.len);
 
         ++numMMIO;
-        return doMMIOAccess(_kvmRun->mmio.phys_addr, _kvmRun->mmio.data,
-                            _kvmRun->mmio.len, _kvmRun->mmio.is_write);
+        Tick ticks = doMMIOAccess(_kvmRun->mmio.phys_addr, _kvmRun->mmio.data,
+                                  _kvmRun->mmio.len, _kvmRun->mmio.is_write);
+        // doMMIOAccess could have triggered a suspend, in which case we don't
+        // want to overwrite the _status.
+        if (_status != Idle)
+            _status = dataPort.nextIOState();
+        return ticks;
+      }
 
       case KVM_EXIT_IRQ_WINDOW_OPEN:
         return handleKvmExitIRQWindowOpen();
@@ -1001,38 +1119,40 @@ BaseKvmCPU::doMMIOAccess(Addr paddr, void *data, int size, bool write)
     ThreadContext *tc(thread->getTC());
     syncThreadContext();
 
-    Request mmio_req(paddr, size, Request::UNCACHEABLE, dataMasterId());
-    mmio_req.setThreadContext(tc->contextId(), 0);
+    RequestPtr mmio_req = new Request(paddr, size, Request::UNCACHEABLE,
+                                      dataMasterId());
+    mmio_req->setContext(tc->contextId());
     // Some architectures do need to massage physical addresses a bit
     // before they are inserted into the memory system. This enables
     // APIC accesses on x86 and m5ops where supported through a MMIO
     // interface.
     BaseTLB::Mode tlb_mode(write ? BaseTLB::Write : BaseTLB::Read);
-    Fault fault(tc->getDTBPtr()->finalizePhysical(&mmio_req, tc, tlb_mode));
+    Fault fault(tc->getDTBPtr()->finalizePhysical(mmio_req, tc, tlb_mode));
     if (fault != NoFault)
         warn("Finalization of MMIO address failed: %s\n", fault->name());
 
 
     const MemCmd cmd(write ? MemCmd::WriteReq : MemCmd::ReadReq);
-    Packet pkt(&mmio_req, cmd);
-    pkt.dataStatic(data);
+    PacketPtr pkt = new Packet(mmio_req, cmd);
+    pkt->dataStatic(data);
 
-    if (mmio_req.isMmappedIpr()) {
+    if (mmio_req->isMmappedIpr()) {
         // We currently assume that there is no need to migrate to a
         // different event queue when doing IPRs. Currently, IPRs are
         // only used for m5ops, so it should be a valid assumption.
         const Cycles ipr_delay(write ?
-                             TheISA::handleIprWrite(tc, &pkt) :
-                             TheISA::handleIprRead(tc, &pkt));
+                             TheISA::handleIprWrite(tc, pkt) :
+                             TheISA::handleIprRead(tc, pkt));
         threadContextDirty = true;
+        delete pkt->req;
+        delete pkt;
         return clockPeriod() * ipr_delay;
     } else {
-        // Temporarily lock and migrate to the event queue of the
-        // VM. This queue is assumed to "own" all devices we need to
-        // access if running in multi-core mode.
-        EventQueue::ScopedMigration migrate(vm.eventQueue());
+        // Temporarily lock and migrate to the device event queue to
+        // prevent races in multi-core mode.
+        EventQueue::ScopedMigration migrate(deviceEventQueue());
 
-        return dataPort.sendAtomic(&pkt);
+        return dataPort.submitIO(pkt);
     }
 }
 
@@ -1199,7 +1319,7 @@ BaseKvmCPU::setupCounters()
 bool
 BaseKvmCPU::tryDrain()
 {
-    if (!drainManager)
+    if (drainState() != DrainState::Draining)
         return false;
 
     if (!archIsDrained()) {
@@ -1210,8 +1330,7 @@ BaseKvmCPU::tryDrain()
     if (_status == Idle || _status == Running) {
         DPRINTF(Drain,
                 "tryDrain: CPU transitioned into the Idle state, drain done\n");
-        drainManager->signalDrainDone();
-        drainManager = NULL;
+        signalDrainDone();
         return true;
     } else {
         DPRINTF(Drain, "tryDrain: CPU not ready.\n");

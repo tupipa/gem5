@@ -52,11 +52,12 @@
 #define __MEM_XBAR_HH__
 
 #include <deque>
+#include <unordered_map>
 
 #include "base/addr_range_map.hh"
-#include "base/hashmap.hh"
 #include "base/types.hh"
 #include "mem/mem_object.hh"
+#include "mem/qport.hh"
 #include "params/BaseXBar.hh"
 #include "sim/stats.hh"
 
@@ -113,7 +114,7 @@ class BaseXBar : public MemObject
          *
          * @return 1 if busy or waiting to retry, or 0 if idle
          */
-        unsigned int drain(DrainManager *dm);
+        DrainState drain() override;
 
         /**
          * Get the crossbar layer's name
@@ -216,9 +217,6 @@ class BaseXBar : public MemObject
         /** track the state of the layer */
         State state;
 
-        /** manager to signal when drained */
-        DrainManager *drainManager;
-
         /**
          * A deque of ports that retry should be called on because
          * the original send was delayed due to a busy layer.
@@ -239,7 +237,7 @@ class BaseXBar : public MemObject
         void releaseLayer();
 
         /** event used to schedule a release of the layer */
-        EventWrapper<Layer, &Layer::releaseLayer> releaseEvent;
+        EventFunctionWrapper releaseEvent;
 
         /**
          * Stats for occupancy and utilization. These stats capture
@@ -329,7 +327,7 @@ class BaseXBar : public MemObject
      * the underlying Request pointer inside the Packet stays
      * constant.
      */
-    m5::unordered_map<RequestPtr, PortID> routeTo;
+    std::unordered_map<RequestPtr, PortID> routeTo;
 
     /** all contigous ranges seen by this crossbar */
     AddrRangeList xbarRanges;
@@ -342,7 +340,7 @@ class BaseXBar : public MemObject
      *
      * @param master_port_id id of the port that received the change
      */
-    void recvRangeChange(PortID master_port_id);
+    virtual void recvRangeChange(PortID master_port_id);
 
     /** Find which port connected to this crossbar (if any) should be
      * given a packet with this address.
@@ -427,7 +425,7 @@ class BaseXBar : public MemObject
     bool gotAllAddrRanges;
 
     /** The master and slave ports of the crossbar */
-    std::vector<SlavePort*> slavePorts;
+    std::vector<QueuedSlavePort*> slavePorts;
     std::vector<MasterPort*> masterPorts;
 
     /** Port that handles requests that don't match any of the interfaces.*/
@@ -440,8 +438,6 @@ class BaseXBar : public MemObject
     const bool useDefaultRange;
 
     BaseXBar(const BaseXBarParams *p);
-
-    virtual ~BaseXBar();
 
     /**
      * Stats for transaction distribution and data passing through the
@@ -458,6 +454,8 @@ class BaseXBar : public MemObject
 
   public:
 
+    virtual ~BaseXBar();
+
     virtual void init();
 
     /** A function used to return the port associated with this object. */
@@ -465,8 +463,6 @@ class BaseXBar : public MemObject
                                   PortID idx = InvalidPortID);
     BaseSlavePort& getSlavePort(const std::string& if_name,
                                 PortID idx = InvalidPortID);
-
-    virtual unsigned int drain(DrainManager *dm) = 0;
 
     virtual void regStats();
 

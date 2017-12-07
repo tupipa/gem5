@@ -37,11 +37,17 @@
 #include "base/types.hh"
 #include "sim/serialize.hh"
 
+// Logical register index type.
+typedef uint16_t RegIndex;
+
+/** Logical vector register elem index type. */
+using ElemIndex = uint16_t;
+
 namespace GenericISA
 {
 
 // The guaranteed interface.
-class PCStateBase
+class PCStateBase : public Serializable
 {
   protected:
     Addr _pc;
@@ -105,14 +111,14 @@ class PCStateBase
     }
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
         SERIALIZE_SCALAR(_pc);
         SERIALIZE_SCALAR(_npc);
     }
 
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
         UNSERIALIZE_SCALAR(_pc);
         UNSERIALIZE_SCALAR(_npc);
@@ -147,6 +153,12 @@ class SimplePCState : public PCStateBase
         pc(val);
         npc(val + sizeof(MachInst));
     };
+
+    void
+    setNPC(Addr val)
+    {
+        npc(val);
+    }
 
     SimplePCState() {}
     SimplePCState(Addr val) { set(val); }
@@ -248,17 +260,17 @@ class UPCState : public SimplePCState<MachInst>
     }
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
-        Base::serialize(os);
+        Base::serialize(cp);
         SERIALIZE_SCALAR(_upc);
         SERIALIZE_SCALAR(_nupc);
     }
 
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
-        Base::unserialize(cp, section);
+        Base::unserialize(cp);
         UNSERIALIZE_SCALAR(_upc);
         UNSERIALIZE_SCALAR(_nupc);
     }
@@ -329,16 +341,16 @@ class DelaySlotPCState : public SimplePCState<MachInst>
     }
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
-        Base::serialize(os);
+        Base::serialize(cp);
         SERIALIZE_SCALAR(_nnpc);
     }
 
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
-        Base::unserialize(cp, section);
+        Base::unserialize(cp);
         UNSERIALIZE_SCALAR(_nnpc);
     }
 };
@@ -426,17 +438,17 @@ class DelaySlotUPCState : public DelaySlotPCState<MachInst>
     }
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
-        Base::serialize(os);
+        Base::serialize(cp);
         SERIALIZE_SCALAR(_upc);
         SERIALIZE_SCALAR(_nupc);
     }
 
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
-        Base::unserialize(cp, section);
+        Base::unserialize(cp);
         UNSERIALIZE_SCALAR(_upc);
         UNSERIALIZE_SCALAR(_nupc);
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012 ARM Limited
+ * Copyright (c) 2012,2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -43,36 +43,9 @@
 #ifndef __BASE_COMPILER_HH__
 #define __BASE_COMPILER_HH__
 
-// gcc C++11 status: http://gcc.gnu.org/projects/cxx0x.html
-// clang C++11 status: http://clang.llvm.org/cxx_status.html
+#include <memory>
+
 // http://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
-
-/* Support for override control (final/override) */
-#undef M5_COMP_HAS_OVERRIDE_CONTROL
-
-#if defined(__GNUC__) && !defined(__clang__) /* Check for gcc */
-
-#  define M5_GCC_VERSION(maj, min) \
-    (__GNUC__ > (maj) || (__GNUC__ == (maj) && __GNUC_MINOR__ >= (min)))
-
-#  define M5_COMP_HAS_OVERRIDE_CONTROL M5_GCC_VERSION(4, 7)
-
-#elif defined(__clang__) /* Check for clang */
-
-#  define M5_COMP_HAS_OVERRIDE_CONTROL __has_feature(cxx_override_control)
-
-#else
-#  error "Need to define compiler options in base/compiler.hh"
-#endif
-
-
-#if M5_COMP_HAS_OVERRIDE_CONTROL
-#  define M5_ATTR_FINAL final
-#  define M5_ATTR_OVERRIDE override
-#else
-#  define M5_ATTR_FINAL
-#  define M5_ATTR_OVERRIDE
-#endif
 
 #if defined(__GNUC__) // clang or gcc
 #  define M5_ATTR_NORETURN  __attribute__((noreturn))
@@ -89,5 +62,29 @@
 #else
 #  define M5_CLASS_VAR_USED
 #endif
+
+// std::make_unique redefined for C++11 compilers
+namespace m5
+{
+
+#if __cplusplus == 201402L // C++14
+
+using std::make_unique;
+
+#else // C++11
+
+/** Defining custom version of make_unique: m5::make_unique<>() */
+template<typename T, typename... Args>
+std::unique_ptr<T>
+make_unique( Args&&... constructor_args )
+{
+    return std::unique_ptr<T>(
+               new T( std::forward<Args>(constructor_args)... )
+           );
+}
+
+#endif // __cplusplus == 201402L
+
+} //namespace m5
 
 #endif // __BASE_COMPILER_HH__

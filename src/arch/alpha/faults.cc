@@ -29,15 +29,16 @@
  *          Kevin Lim
  */
 
-#include "arch/alpha/ev5.hh"
 #include "arch/alpha/faults.hh"
+
+#include "arch/alpha/ev5.hh"
 #include "arch/alpha/tlb.hh"
 #include "base/trace.hh"
 #include "cpu/base.hh"
 #include "cpu/thread_context.hh"
 #include "mem/page_table.hh"
-#include "sim/process.hh"
 #include "sim/full_system.hh"
+#include "sim/process.hh"
 
 namespace AlphaISA {
 
@@ -96,6 +97,13 @@ FaultStat UnimplementedOpcodeFault::_count;
 FaultName FloatEnableFault::_name = "fen";
 FaultVect FloatEnableFault::_vect = 0x0581;
 FaultStat FloatEnableFault::_count;
+
+/* We use the same fault vector, as for the guest system these should be the
+ * same, but for host purposes, having differentiation is helpful for
+ * debug/monitorization purposes. */
+FaultName VectorEnableFault::_name = "ven";
+FaultVect VectorEnableFault::_vect = 0x0581;
+FaultStat VectorEnableFault::_count;
 
 FaultName PalFault::_name = "pal";
 FaultVect PalFault::_vect = 0x2001;

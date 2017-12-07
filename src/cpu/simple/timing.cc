@@ -1,6 +1,6 @@
 /*
  * Copyright 2014 Google, Inc.
- * Copyright (c) 2010-2013 ARM Limited
+ * Copyright (c) 2010-2013,2015,2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -41,16 +41,18 @@
  * Authors: Steve Reinhardt
  */
 
+#include "cpu/simple/timing.hh"
+
 #include "arch/locked_mem.hh"
 #include "arch/mmapped_ipr.hh"
 #include "arch/utility.hh"
 #include "base/bigint.hh"
 #include "config/the_isa.hh"
-#include "cpu/simple/timing.hh"
 #include "cpu/exetrace.hh"
 #include "debug/Config.hh"
 #include "debug/Drain.hh"
 #include "debug/ExecFaulting.hh"
+#include "debug/Mwait.hh"
 #include "debug/SimpleCPU.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
@@ -59,26 +61,13 @@
 #include "sim/full_system.hh"
 #include "sim/system.hh"
 
-#include "debug/Mwait.hh"
-
 using namespace std;
 using namespace TheISA;
 
 void
 TimingSimpleCPU::init()
 {
-    BaseCPU::init();
-
-    // Initialise the ThreadContext's memory proxies
-    tcBase()->initMemProxies(tcBase());
-
-    if (FullSystem && !params()->switched_out) {
-        for (int i = 0; i < threadContexts.size(); ++i) {
-            ThreadContext *tc = threadContexts[i];
-            // initialize CPU, including PC
-            TheISA::initCPU(tc, _cpuId);
-        }
-    }
+    BaseSimpleCPU::init();
 }
 
 void
@@ -91,7 +80,7 @@ TimingSimpleCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
 TimingSimpleCPU::TimingSimpleCPU(TimingSimpleCPUParams *p)
     : BaseSimpleCPU(p), fetchTranslation(this), icachePort(this),
       dcachePort(this), ifetch_pkt(NULL), dcache_pkt(NULL), previousCycle(0),
-      fetchEvent(this), drainManager(NULL)
+      fetchEvent([this]{ fetch(); }, name())
 {
     _status = Idle;
 }
@@ -102,20 +91,22 @@ TimingSimpleCPU::~TimingSimpleCPU()
 {
 }
 
-unsigned int
-TimingSimpleCPU::drain(DrainManager *drain_manager)
+DrainState
+TimingSimpleCPU::drain()
 {
-    assert(!drainManager);
+    // Deschedule any power gating event (if any)
+    deschedulePowerGatingEvent();
+
     if (switchedOut())
-        return 0;
+        return DrainState::Drained;
 
     if (_status == Idle ||
         (_status == BaseSimpleCPU::Running && isDrained())) {
         DPRINTF(Drain, "No need to drain.\n");
-        return 0;
+        activeThreads.clear();
+        return DrainState::Drained;
     } else {
-        drainManager = drain_manager;
-        DPRINTF(Drain, "Requesting drain: %s\n", pcState());
+        DPRINTF(Drain, "Requesting drain.\n");
 
         // The fetch event can become descheduled if a drain didn't
         // succeed on the first attempt. We need to reschedule it if
@@ -123,7 +114,7 @@ TimingSimpleCPU::drain(DrainManager *drain_manager)
         if (_status == BaseSimpleCPU::Running && !fetchEvent.scheduled())
             schedule(fetchEvent, clockEdge());
 
-        return 1;
+        return DrainState::Draining;
     }
 }
 
@@ -131,7 +122,6 @@ void
 TimingSimpleCPU::drainResume()
 {
     assert(!fetchEvent.scheduled());
-    assert(!drainManager);
     if (switchedOut())
         return;
 
@@ -139,32 +129,44 @@ TimingSimpleCPU::drainResume()
     verifyMemoryMode();
 
     assert(!threadContexts.empty());
-    if (threadContexts.size() > 1)
-        fatal("The timing CPU only supports one thread.\n");
 
-    if (thread->status() == ThreadContext::Active) {
-        schedule(fetchEvent, nextCycle());
-        _status = BaseSimpleCPU::Running;
-        notIdleFraction = 1;
-    } else {
-        _status = BaseSimpleCPU::Idle;
-        notIdleFraction = 0;
+    _status = BaseSimpleCPU::Idle;
+
+    for (ThreadID tid = 0; tid < numThreads; tid++) {
+        if (threadInfo[tid]->thread->status() == ThreadContext::Active) {
+            threadInfo[tid]->notIdleFraction = 1;
+
+            activeThreads.push_back(tid);
+
+            _status = BaseSimpleCPU::Running;
+
+            // Fetch if any threads active
+            if (!fetchEvent.scheduled()) {
+                schedule(fetchEvent, nextCycle());
+            }
+        } else {
+            threadInfo[tid]->notIdleFraction = 0;
+        }
     }
+
+    // Reschedule any power gating event (if any)
+    schedulePowerGatingEvent();
+
+    system->totalNumInsts = 0;
 }
 
 bool
 TimingSimpleCPU::tryCompleteDrain()
 {
-    if (!drainManager)
+    if (drainState() != DrainState::Draining)
         return false;
 
-    DPRINTF(Drain, "tryCompleteDrain: %s\n", pcState());
+    DPRINTF(Drain, "tryCompleteDrain.\n");
     if (!isDrained())
         return false;
 
     DPRINTF(Drain, "CPU done draining, processing drain event\n");
-    drainManager->signalDrainDone();
-    drainManager = NULL;
+    signalDrainDone();
 
     return true;
 }
@@ -172,14 +174,18 @@ TimingSimpleCPU::tryCompleteDrain()
 void
 TimingSimpleCPU::switchOut()
 {
+    SimpleExecContext& t_info = *threadInfo[curThread];
+    M5_VAR_USED SimpleThread* thread = t_info.thread;
+
     BaseSimpleCPU::switchOut();
 
     assert(!fetchEvent.scheduled());
     assert(_status == BaseSimpleCPU::Running || _status == Idle);
-    assert(!stayAtPC);
-    assert(microPC() == 0);
+    assert(!t_info.stayAtPC);
+    assert(thread->microPC() == 0);
 
     updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
 }
 
 
@@ -205,16 +211,22 @@ TimingSimpleCPU::activateContext(ThreadID thread_num)
 {
     DPRINTF(SimpleCPU, "ActivateContext %d\n", thread_num);
 
-    assert(thread_num == 0);
-    assert(thread);
+    assert(thread_num < numThreads);
 
-    assert(_status == Idle);
-
-    notIdleFraction = 1;
-    _status = BaseSimpleCPU::Running;
+    threadInfo[thread_num]->notIdleFraction = 1;
+    if (_status == BaseSimpleCPU::Idle)
+        _status = BaseSimpleCPU::Running;
 
     // kick things off by initiating the fetch of the next instruction
-    schedule(fetchEvent, clockEdge(Cycles(0)));
+    if (!fetchEvent.scheduled())
+        schedule(fetchEvent, clockEdge(Cycles(0)));
+
+    if (std::find(activeThreads.begin(), activeThreads.end(), thread_num)
+         == activeThreads.end()) {
+        activeThreads.push_back(thread_num);
+    }
+
+    BaseCPU::activateContext(thread_num);
 }
 
 
@@ -223,24 +235,33 @@ TimingSimpleCPU::suspendContext(ThreadID thread_num)
 {
     DPRINTF(SimpleCPU, "SuspendContext %d\n", thread_num);
 
-    assert(thread_num == 0);
-    assert(thread);
+    assert(thread_num < numThreads);
+    activeThreads.remove(thread_num);
 
     if (_status == Idle)
         return;
 
     assert(_status == BaseSimpleCPU::Running);
 
-    // just change status to Idle... if status != Running,
-    // completeInst() will not initiate fetch of next instruction.
+    threadInfo[thread_num]->notIdleFraction = 0;
 
-    notIdleFraction = 0;
-    _status = Idle;
+    if (activeThreads.empty()) {
+        _status = Idle;
+
+        if (fetchEvent.scheduled()) {
+            deschedule(fetchEvent);
+        }
+    }
+
+    BaseCPU::suspendContext(thread_num);
 }
 
 bool
 TimingSimpleCPU::handleReadPacket(PacketPtr pkt)
 {
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     RequestPtr req = pkt->req;
 
     // We're about the issues a locked load, so tell the monitor
@@ -268,6 +289,9 @@ void
 TimingSimpleCPU::sendData(RequestPtr req, uint8_t *data, uint64_t *res,
                           bool read)
 {
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     PacketPtr pkt = buildPacket(req, read);
     pkt->dataDynamic<uint8_t>(data);
     if (req->getFlags().isSet(Request::NO_ACCESS)) {
@@ -289,6 +313,7 @@ TimingSimpleCPU::sendData(RequestPtr req, uint8_t *data, uint64_t *res,
         if (do_access) {
             dcache_pkt = pkt;
             handleWritePacket();
+            threadSnoop(pkt, curThread);
         } else {
             _status = DcacheWaitResponse;
             completeDataAccess(pkt);
@@ -339,6 +364,7 @@ TimingSimpleCPU::translationFault(const Fault &fault)
     // fault may be NoFault in cases where a fault is suppressed,
     // for instance prefetches.
     updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
 
     if (traceData) {
         // Since there was a fault, we shouldn't trace this instruction.
@@ -391,11 +417,21 @@ TimingSimpleCPU::buildSplitPacket(PacketPtr &pkt1, PacketPtr &pkt2,
 
 Fault
 TimingSimpleCPU::readMem(Addr addr, uint8_t *data,
-                         unsigned size, unsigned flags)
+                         unsigned size, Request::Flags flags)
 {
+    panic("readMem() is for atomic accesses, and should "
+          "never be called on TimingSimpleCPU.\n");
+}
+
+Fault
+TimingSimpleCPU::initiateMemRead(Addr addr, unsigned size,
+                                 Request::Flags flags)
+{
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     Fault fault;
     const int asid = 0;
-    const ThreadID tid = 0;
     const Addr pc = thread->instAddr();
     unsigned block_size = cacheLineSize();
     BaseTLB::Mode mode = BaseTLB::Read;
@@ -403,8 +439,8 @@ TimingSimpleCPU::readMem(Addr addr, uint8_t *data,
     if (traceData)
         traceData->setMem(addr, size, flags);
 
-    RequestPtr req  = new Request(asid, addr, size,
-                                  flags, dataMasterId(), pc, _cpuId, tid);
+    RequestPtr req = new Request(asid, addr, size, flags, dataMasterId(), pc,
+                                 thread->contextId());
 
     req->taskId(taskId());
 
@@ -425,14 +461,14 @@ TimingSimpleCPU::readMem(Addr addr, uint8_t *data,
         DataTranslation<TimingSimpleCPU *> *trans2 =
             new DataTranslation<TimingSimpleCPU *>(this, state, 1);
 
-        thread->dtb->translateTiming(req1, tc, trans1, mode);
-        thread->dtb->translateTiming(req2, tc, trans2, mode);
+        thread->dtb->translateTiming(req1, thread->getTC(), trans1, mode);
+        thread->dtb->translateTiming(req2, thread->getTC(), trans2, mode);
     } else {
         WholeTranslationState *state =
             new WholeTranslationState(req, new uint8_t[size], NULL, mode);
         DataTranslation<TimingSimpleCPU *> *translation
             = new DataTranslation<TimingSimpleCPU *>(this, state);
-        thread->dtb->translateTiming(req, tc, translation, mode);
+        thread->dtb->translateTiming(req, thread->getTC(), translation, mode);
     }
 
     return NoFault;
@@ -441,6 +477,9 @@ TimingSimpleCPU::readMem(Addr addr, uint8_t *data,
 bool
 TimingSimpleCPU::handleWritePacket()
 {
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     RequestPtr req = dcache_pkt->req;
     if (req->isMmappedIpr()) {
         Cycles delay = TheISA::handleIprWrite(thread->getTC(), dcache_pkt);
@@ -459,17 +498,19 @@ TimingSimpleCPU::handleWritePacket()
 
 Fault
 TimingSimpleCPU::writeMem(uint8_t *data, unsigned size,
-                          Addr addr, unsigned flags, uint64_t *res)
+                          Addr addr, Request::Flags flags, uint64_t *res)
 {
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     uint8_t *newData = new uint8_t[size];
     const int asid = 0;
-    const ThreadID tid = 0;
     const Addr pc = thread->instAddr();
     unsigned block_size = cacheLineSize();
     BaseTLB::Mode mode = BaseTLB::Write;
 
     if (data == NULL) {
-        assert(flags & Request::CACHE_BLOCK_ZERO);
+        assert(flags & Request::STORE_NO_DATA);
         // This must be a cache block cleaning request
         memset(newData, 0, size);
     } else {
@@ -479,8 +520,8 @@ TimingSimpleCPU::writeMem(uint8_t *data, unsigned size,
     if (traceData)
         traceData->setMem(addr, size, flags);
 
-    RequestPtr req = new Request(asid, addr, size,
-                                 flags, dataMasterId(), pc, _cpuId, tid);
+    RequestPtr req = new Request(asid, addr, size, flags, dataMasterId(), pc,
+                                 thread->contextId());
 
     req->taskId(taskId());
 
@@ -500,20 +541,33 @@ TimingSimpleCPU::writeMem(uint8_t *data, unsigned size,
         DataTranslation<TimingSimpleCPU *> *trans2 =
             new DataTranslation<TimingSimpleCPU *>(this, state, 1);
 
-        thread->dtb->translateTiming(req1, tc, trans1, mode);
-        thread->dtb->translateTiming(req2, tc, trans2, mode);
+        thread->dtb->translateTiming(req1, thread->getTC(), trans1, mode);
+        thread->dtb->translateTiming(req2, thread->getTC(), trans2, mode);
     } else {
         WholeTranslationState *state =
             new WholeTranslationState(req, newData, res, mode);
         DataTranslation<TimingSimpleCPU *> *translation =
             new DataTranslation<TimingSimpleCPU *>(this, state);
-        thread->dtb->translateTiming(req, tc, translation, mode);
+        thread->dtb->translateTiming(req, thread->getTC(), translation, mode);
     }
 
     // Translation faults will be returned via finishTranslation()
     return NoFault;
 }
 
+void
+TimingSimpleCPU::threadSnoop(PacketPtr pkt, ThreadID sender)
+{
+    for (ThreadID tid = 0; tid < numThreads; tid++) {
+        if (tid != sender) {
+            if (getCpuAddrMonitor(tid)->doMonitor(pkt)) {
+                wakeup(tid);
+            }
+            TheISA::handleLockedSnoop(threadInfo[tid]->thread, pkt,
+                    dcachePort.cacheBlockMask);
+        }
+    }
+}
 
 void
 TimingSimpleCPU::finishTranslation(WholeTranslationState *state)
@@ -544,6 +598,12 @@ TimingSimpleCPU::finishTranslation(WholeTranslationState *state)
 void
 TimingSimpleCPU::fetch()
 {
+    // Change thread if multi-threaded
+    swapActiveThread();
+
+    SimpleExecContext &t_info = *threadInfo[curThread];
+    SimpleThread* thread = t_info.thread;
+
     DPRINTF(SimpleCPU, "Fetch\n");
 
     if (!curStaticInst || !curStaticInst->isDelayedCommit()) {
@@ -556,22 +616,24 @@ TimingSimpleCPU::fetch()
         return;
 
     TheISA::PCState pcState = thread->pcState();
-    bool needToFetch = !isRomMicroPC(pcState.microPC()) && !curMacroStaticInst;
+    bool needToFetch = !isRomMicroPC(pcState.microPC()) &&
+                       !curMacroStaticInst;
 
     if (needToFetch) {
         _status = BaseSimpleCPU::Running;
         Request *ifetch_req = new Request();
         ifetch_req->taskId(taskId());
-        ifetch_req->setThreadContext(_cpuId, /* thread ID */ 0);
+        ifetch_req->setContext(thread->contextId());
         setupFetchRequest(ifetch_req);
         DPRINTF(SimpleCPU, "Translating address %#x\n", ifetch_req->getVaddr());
-        thread->itb->translateTiming(ifetch_req, tc, &fetchTranslation,
-                BaseTLB::Execute);
+        thread->itb->translateTiming(ifetch_req, thread->getTC(),
+                &fetchTranslation, BaseTLB::Execute);
     } else {
         _status = IcacheWaitResponse;
         completeIfetch(NULL);
 
         updateCycleCounts();
+        updateCycleCounters(BaseCPU::CPU_STATE_ON);
     }
 }
 
@@ -605,25 +667,34 @@ TimingSimpleCPU::sendFetch(const Fault &fault, RequestPtr req,
     }
 
     updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
 }
 
 
 void
 TimingSimpleCPU::advanceInst(const Fault &fault)
 {
+    SimpleExecContext &t_info = *threadInfo[curThread];
+
     if (_status == Faulting)
         return;
 
     if (fault != NoFault) {
-        advancePC(fault);
         DPRINTF(SimpleCPU, "Fault occured, scheduling fetch event\n");
-        reschedule(fetchEvent, clockEdge(), true);
+
+        advancePC(fault);
+
+        Tick stall = dynamic_pointer_cast<SyscallRetryFault>(fault) ?
+                     clockEdge(syscallRetryLatency) : clockEdge();
+
+        reschedule(fetchEvent, stall, true);
+
         _status = Faulting;
         return;
     }
 
 
-    if (!stayAtPC)
+    if (!t_info.stayAtPC)
         advancePC(fault);
 
     if (tryCompleteDrain())
@@ -641,6 +712,8 @@ TimingSimpleCPU::advanceInst(const Fault &fault)
 void
 TimingSimpleCPU::completeIfetch(PacketPtr pkt)
 {
+    SimpleExecContext& t_info = *threadInfo[curThread];
+
     DPRINTF(SimpleCPU, "Complete ICache Fetch for addr %#x\n", pkt ?
             pkt->getAddr() : 0);
 
@@ -652,6 +725,7 @@ TimingSimpleCPU::completeIfetch(PacketPtr pkt)
     _status = BaseSimpleCPU::Running;
 
     updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
 
     if (pkt)
         pkt->req->setAccessLatency();
@@ -660,7 +734,7 @@ TimingSimpleCPU::completeIfetch(PacketPtr pkt)
     preExecute();
     if (curStaticInst && curStaticInst->isMemRef()) {
         // load or store: just send to dcache
-        Fault fault = curStaticInst->initiateAcc(this, traceData);
+        Fault fault = curStaticInst->initiateAcc(&t_info, traceData);
 
         // If we're not running now the instruction will complete in a dcache
         // response callback or the instruction faulted and has started an
@@ -681,7 +755,7 @@ TimingSimpleCPU::completeIfetch(PacketPtr pkt)
         }
     } else if (curStaticInst) {
         // non-memory instruction: execute completely now
-        Fault fault = curStaticInst->execute(this, traceData);
+        Fault fault = curStaticInst->execute(&t_info, traceData);
 
         // keep an instruction count
         if (fault == NoFault)
@@ -694,7 +768,7 @@ TimingSimpleCPU::completeIfetch(PacketPtr pkt)
         postExecute();
         // @todo remove me after debugging with legion done
         if (curStaticInst && (!curStaticInst->isMicroop() ||
-                    curStaticInst->isFirstMicroop()))
+                curStaticInst->isFirstMicroop()))
             instCnt++;
         advanceInst(fault);
     } else {
@@ -752,6 +826,7 @@ TimingSimpleCPU::completeDataAccess(PacketPtr pkt)
     pkt->req->setAccessLatency();
 
     updateCycleCounts();
+    updateCycleCounters(BaseCPU::CPU_STATE_ON);
 
     if (pkt->senderState) {
         SplitFragmentSenderState * send_state =
@@ -761,7 +836,7 @@ TimingSimpleCPU::completeDataAccess(PacketPtr pkt)
         delete pkt;
         PacketPtr big_pkt = send_state->bigPkt;
         delete send_state;
-        
+
         SplitMainSenderState * main_send_state =
             dynamic_cast<SplitMainSenderState *>(big_pkt->senderState);
         assert(main_send_state);
@@ -780,7 +855,8 @@ TimingSimpleCPU::completeDataAccess(PacketPtr pkt)
 
     _status = BaseSimpleCPU::Running;
 
-    Fault fault = curStaticInst->completeAcc(pkt, this, traceData);
+    Fault fault = curStaticInst->completeAcc(pkt, threadInfo[curThread],
+                                             traceData);
 
     // keep an instruction count
     if (fault == NoFault)
@@ -805,7 +881,6 @@ TimingSimpleCPU::updateCycleCounts()
     const Cycles delta(curCycle() - previousCycle);
 
     numCycles += delta;
-    ppCycles->notify(delta);
 
     previousCycle = curCycle();
 }
@@ -813,19 +888,30 @@ TimingSimpleCPU::updateCycleCounts()
 void
 TimingSimpleCPU::DcachePort::recvTimingSnoopReq(PacketPtr pkt)
 {
-    // X86 ISA: Snooping an invalidation for monitor/mwait
-    if(cpu->getAddrMonitor()->doMonitor(pkt)) {
-        cpu->wakeup();
+    for (ThreadID tid = 0; tid < cpu->numThreads; tid++) {
+        if (cpu->getCpuAddrMonitor(tid)->doMonitor(pkt)) {
+            cpu->wakeup(tid);
+        }
     }
-    TheISA::handleLockedSnoop(cpu->thread, pkt, cacheBlockMask);
+
+    // Making it uniform across all CPUs:
+    // The CPUs need to be woken up only on an invalidation packet (when using caches)
+    // or on an incoming write packet (when not using caches)
+    // It is not necessary to wake up the processor on all incoming packets
+    if (pkt->isInvalidate() || pkt->isWrite()) {
+        for (auto &t_info : cpu->threadInfo) {
+            TheISA::handleLockedSnoop(t_info->thread, pkt, cacheBlockMask);
+        }
+    }
 }
 
 void
 TimingSimpleCPU::DcachePort::recvFunctionalSnoop(PacketPtr pkt)
 {
-    // X86 ISA: Snooping an invalidation for monitor/mwait
-    if(cpu->getAddrMonitor()->doMonitor(pkt)) {
-        cpu->wakeup();
+    for (ThreadID tid = 0; tid < cpu->numThreads; tid++) {
+        if (cpu->getCpuAddrMonitor(tid)->doMonitor(pkt)) {
+            cpu->wakeup(tid);
+        }
     }
 }
 
@@ -870,7 +956,7 @@ TimingSimpleCPU::DcachePort::recvReqRetry()
             dynamic_cast<SplitFragmentSenderState *>(tmp->senderState);
         assert(send_state);
         PacketPtr big_pkt = send_state->bigPkt;
-        
+
         SplitMainSenderState * main_send_state =
             dynamic_cast<SplitMainSenderState *>(big_pkt->senderState);
         assert(main_send_state);
@@ -934,8 +1020,5 @@ TimingSimpleCPU::printAddr(Addr a)
 TimingSimpleCPU *
 TimingSimpleCPUParams::create()
 {
-    numThreads = 1;
-    if (!FullSystem && workload.size() != 1)
-        panic("only one workload allowed");
     return new TimingSimpleCPU(this);
 }

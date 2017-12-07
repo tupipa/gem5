@@ -37,12 +37,13 @@
  * Authors: Andreas Hansson
  */
 
+#include "mem/dramsim2.hh"
+
 #include "DRAMSim2/Callback.h"
 #include "base/callback.hh"
 #include "base/trace.hh"
 #include "debug/DRAMSim2.hh"
 #include "debug/Drain.hh"
-#include "mem/dramsim2.hh"
 #include "sim/system.hh"
 
 DRAMSim2::DRAMSim2(const Params* p) :
@@ -52,8 +53,8 @@ DRAMSim2::DRAMSim2(const Params* p) :
             p->traceFile, p->range.size() / 1024 / 1024, p->enableDebug),
     retryReq(false), retryResp(false), startTick(0),
     nbrOutstandingReads(0), nbrOutstandingWrites(0),
-    drainManager(NULL),
-    sendResponseEvent(this), tickEvent(this)
+    sendResponseEvent([this]{ sendResponse(); }, name()),
+    tickEvent([this]{ tick(); }, name())
 {
     DPRINTF(DRAMSim2,
             "Instantiated DRAMSim2 with clock %d ns and queue size %d\n",
@@ -118,11 +119,8 @@ DRAMSim2::sendResponse()
         if (!responseQueue.empty() && !sendResponseEvent.scheduled())
             schedule(sendResponseEvent, curTick());
 
-        // check if we were asked to drain and if we are now done
-        if (drainManager && nbrOutstanding() == 0) {
-            drainManager->signalDrainDone();
-            drainManager = NULL;
-        }
+        if (nbrOutstanding() == 0)
+            signalDrainDone();
     } else {
         retryResp = true;
 
@@ -159,7 +157,7 @@ DRAMSim2::recvAtomic(PacketPtr pkt)
     access(pkt);
 
     // 50 ns is just an arbitrary value at this point
-    return pkt->memInhibitAsserted() ? 0 : 50000;
+    return pkt->cacheResponding() ? 0 : 50000;
 }
 
 void
@@ -179,21 +177,17 @@ DRAMSim2::recvFunctional(PacketPtr pkt)
 bool
 DRAMSim2::recvTimingReq(PacketPtr pkt)
 {
-    // we should never see a new request while in retry
-    assert(!retryReq);
-
-    // @todo temporary hack to deal with memory corruption issues until
-    // 4-phase transactions are complete
-    for (int x = 0; x < pendingDelete.size(); x++)
-        delete pendingDelete[x];
-    pendingDelete.clear();
-
-    if (pkt->memInhibitAsserted()) {
-        // snooper will supply based on copy of packet
-        // still target's responsibility to delete packet
-        pendingDelete.push_back(pkt);
+    // if a cache is responding, sink the packet without further action
+    if (pkt->cacheResponding()) {
+        pendingDelete.reset(pkt);
         return true;
     }
+
+    // we should not get a new request after committing to retry the
+    // current one, but unfortunately the CPU violates this rule, so
+    // simply ignore it for now
+    if (retryReq)
+        return false;
 
     // if we cannot accept we need to send a retry once progress can
     // be made
@@ -285,9 +279,8 @@ DRAMSim2::accessAndRespond(PacketPtr pkt)
         if (!retryResp && !sendResponseEvent.scheduled())
             schedule(sendResponseEvent, time);
     } else {
-        // @todo the packet is going to be deleted, and the DRAMPacket
-        // is still having a pointer to it
-        pendingDelete.push_back(pkt);
+        // queue the packet for deletion
+        pendingDelete.reset(pkt);
     }
 }
 
@@ -339,11 +332,8 @@ void DRAMSim2::writeComplete(unsigned id, uint64_t addr, uint64_t cycle)
     assert(nbrOutstandingWrites != 0);
     --nbrOutstandingWrites;
 
-    // check if we were asked to drain and if we are now done
-    if (drainManager && nbrOutstanding() == 0) {
-        drainManager->signalDrainDone();
-        drainManager = NULL;
-    }
+    if (nbrOutstanding() == 0)
+        signalDrainDone();
 }
 
 BaseSlavePort&
@@ -356,19 +346,12 @@ DRAMSim2::getSlavePort(const std::string &if_name, PortID idx)
     }
 }
 
-unsigned int
-DRAMSim2::drain(DrainManager* dm)
+DrainState
+DRAMSim2::drain()
 {
     // check our outstanding reads and writes and if any they need to
     // drain
-    if (nbrOutstanding() != 0) {
-        setDrainState(Drainable::Draining);
-        drainManager = dm;
-        return 1;
-    } else {
-        setDrainState(Drainable::Drained);
-        return 0;
-    }
+    return nbrOutstanding() != 0 ? DrainState::Draining : DrainState::Drained;
 }
 
 DRAMSim2::MemoryPort::MemoryPort(const std::string& _name,

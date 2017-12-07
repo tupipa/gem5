@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Advanced Micro Devices, Inc.
+ * Copyright (c) 2014-2016 Advanced Micro Devices, Inc.
  * Copyright (c) 2012 ARM Limited
  * All rights reserved
  *
@@ -41,47 +41,58 @@
  * Authors: Nathan Binkert
  *          Steve Reinhardt
  *          Ali Saidi
+ *          Brandon Potter
  */
+
+#include "sim/process.hh"
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include <cstdio>
+#include <array>
+#include <csignal>
+#include <map>
 #include <string>
+#include <vector>
 
+#include "base/intmath.hh"
 #include "base/loader/object_file.hh"
 #include "base/loader/symtab.hh"
-#include "base/intmath.hh"
 #include "base/statistics.hh"
 #include "config/the_isa.hh"
 #include "cpu/thread_context.hh"
 #include "mem/page_table.hh"
-#include "mem/multi_level_page_table.hh"
 #include "mem/se_translating_port_proxy.hh"
-#include "params/LiveProcess.hh"
 #include "params/Process.hh"
-#include "sim/debug.hh"
-#include "sim/process.hh"
-#include "sim/process_impl.hh"
-#include "sim/stats.hh"
-#include "sim/syscall_emul.hh"
+#include "sim/emul_driver.hh"
+#include "sim/fd_array.hh"
+#include "sim/fd_entry.hh"
+#include "sim/syscall_desc.hh"
 #include "sim/system.hh"
 
 #if THE_ISA == ALPHA_ISA
 #include "arch/alpha/linux/process.hh"
-#include "arch/alpha/tru64/process.hh"
+
 #elif THE_ISA == SPARC_ISA
 #include "arch/sparc/linux/process.hh"
 #include "arch/sparc/solaris/process.hh"
+
 #elif THE_ISA == MIPS_ISA
 #include "arch/mips/linux/process.hh"
+
 #elif THE_ISA == ARM_ISA
-#include "arch/arm/linux/process.hh"
 #include "arch/arm/freebsd/process.hh"
+#include "arch/arm/linux/process.hh"
+
 #elif THE_ISA == X86_ISA
 #include "arch/x86/linux/process.hh"
+
 #elif THE_ISA == POWER_ISA
 #include "arch/power/linux/process.hh"
+
+#elif THE_ISA == RISCV_ISA
+#include "arch/riscv/linux/process.hh"
+
 #else
 #error "THE_ISA not set"
 #endif
@@ -90,158 +101,187 @@
 using namespace std;
 using namespace TheISA;
 
-// current number of allocated processes
-int num_processes = 0;
-
-template<class IntType>
-AuxVector<IntType>::AuxVector(IntType type, IntType val)
-{
-    a_type = TheISA::htog(type);
-    a_val = TheISA::htog(val);
-}
-
-template struct AuxVector<uint32_t>;
-template struct AuxVector<uint64_t>;
-
-Process::Process(ProcessParams * params)
+Process::Process(ProcessParams * params, ObjectFile * obj_file)
     : SimObject(params), system(params->system),
-      brk_point(0), stack_base(0), stack_size(0), stack_min(0),
-      max_stack_size(params->max_stack_size),
-      next_thread_stack_base(0),
-      M5_pid(system->allocatePID()),
       useArchPT(params->useArchPT),
       kvmInSE(params->kvmInSE),
       pTable(useArchPT ?
-        static_cast<PageTableBase *>(new ArchPageTable(name(), M5_pid, system)) :
-        static_cast<PageTableBase *>(new FuncPageTable(name(), M5_pid)) ),
+        static_cast<PageTableBase *>(new ArchPageTable(name(), params->pid,
+            system)) :
+        static_cast<PageTableBase *>(new FuncPageTable(name(), params->pid))),
       initVirtMem(system->getSystemPort(), this,
-                  SETranslatingPortProxy::Always)
+                  SETranslatingPortProxy::Always),
+      objFile(obj_file),
+      argv(params->cmd), envp(params->env), cwd(params->cwd),
+      executable(params->executable),
+      _uid(params->uid), _euid(params->euid),
+      _gid(params->gid), _egid(params->egid),
+      _pid(params->pid), _ppid(params->ppid),
+      _pgid(params->pgid), drivers(params->drivers),
+      fds(make_shared<FDArray>(params->input, params->output, params->errout)),
+      childClearTID(0)
 {
-    string in = params->input;
-    string out = params->output;
-    string err = params->errout;
+    if (_pid >= System::maxPID)
+        fatal("_pid is too large: %d", _pid);
 
-    // initialize file descriptors to default: same as simulator
-    int stdin_fd, stdout_fd, stderr_fd;
+    auto ret_pair = system->PIDs.emplace(_pid);
+    if (!ret_pair.second)
+        fatal("_pid %d is already used", _pid);
 
-    if (in == "stdin" || in == "cin")
-        stdin_fd = STDIN_FILENO;
-    else if (in == "None")
-        stdin_fd = -1;
-    else
-        stdin_fd = Process::openInputFile(in);
+    /**
+     * Linux bundles together processes into this concept called a thread
+     * group. The thread group is responsible for recording which processes
+     * behave as threads within a process context. The thread group leader
+     * is the process who's tgid is equal to its pid. Other processes which
+     * belong to the thread group, but do not lead the thread group, are
+     * treated as child threads. These threads are created by the clone system
+     * call with options specified to create threads (differing from the
+     * options used to implement a fork). By default, set up the tgid/pid
+     * with a new, equivalent value. If CLONE_THREAD is specified, patch
+     * the tgid value with the old process' value.
+     */
+    _tgid = params->pid;
 
-    if (out == "stdout" || out == "cout")
-        stdout_fd = STDOUT_FILENO;
-    else if (out == "stderr" || out == "cerr")
-        stdout_fd = STDERR_FILENO;
-    else if (out == "None")
-        stdout_fd = -1;
-    else
-        stdout_fd = Process::openOutputFile(out);
+    exitGroup = new bool();
+    sigchld = new bool();
 
-    if (err == "stdout" || err == "cout")
-        stderr_fd = STDOUT_FILENO;
-    else if (err == "stderr" || err == "cerr")
-        stderr_fd = STDERR_FILENO;
-    else if (err == "None")
-        stderr_fd = -1;
-    else if (err == out)
-        stderr_fd = stdout_fd;
-    else
-        stderr_fd = Process::openOutputFile(err);
-
-    // initialize first 3 fds (stdin, stdout, stderr)
-    Process::FdMap *fdo = &fd_map[STDIN_FILENO];
-    fdo->fd = stdin_fd;
-    fdo->filename = in;
-    fdo->flags = O_RDONLY;
-    fdo->mode = -1;
-    fdo->fileOffset = 0;
-
-    fdo =  &fd_map[STDOUT_FILENO];
-    fdo->fd = stdout_fd;
-    fdo->filename = out;
-    fdo->flags =  O_WRONLY | O_CREAT | O_TRUNC;
-    fdo->mode = 0774;
-    fdo->fileOffset = 0;
-
-    fdo = &fd_map[STDERR_FILENO];
-    fdo->fd = stderr_fd;
-    fdo->filename = err;
-    fdo->flags = O_WRONLY;
-    fdo->mode = -1;
-    fdo->fileOffset = 0;
-
-
-    // mark remaining fds as free
-    for (int i = 3; i <= MAX_FD; ++i) {
-        fdo = &fd_map[i];
-        fdo->fd = -1;
+    if (!debugSymbolTable) {
+        debugSymbolTable = new SymbolTable();
+        if (!objFile->loadGlobalSymbols(debugSymbolTable) ||
+            !objFile->loadLocalSymbols(debugSymbolTable) ||
+            !objFile->loadWeakSymbols(debugSymbolTable)) {
+            delete debugSymbolTable;
+            debugSymbolTable = nullptr;
+        }
     }
-
-    mmap_start = mmap_end = 0;
-    nxm_start = nxm_end = 0;
-    // other parameters will be initialized when the program is loaded
 }
 
+void
+Process::clone(ThreadContext *otc, ThreadContext *ntc,
+               Process *np, TheISA::IntReg flags)
+{
+#ifndef CLONE_VM
+#define CLONE_VM 0
+#endif
+#ifndef CLONE_FILES
+#define CLONE_FILES 0
+#endif
+#ifndef CLONE_THREAD
+#define CLONE_THREAD 0
+#endif
+    if (CLONE_VM & flags) {
+        /**
+         * Share the process memory address space between the new process
+         * and the old process. Changes in one will be visible in the other
+         * due to the pointer use.
+         */
+        delete np->pTable;
+        np->pTable = pTable;
+        ntc->getMemProxy().setPageTable(np->pTable);
+
+        np->memState = memState;
+    } else {
+        /**
+         * Duplicate the process memory address space. The state needs to be
+         * copied over (rather than using pointers to share everything).
+         */
+        typedef std::vector<pair<Addr,Addr>> MapVec;
+        MapVec mappings;
+        pTable->getMappings(&mappings);
+
+        for (auto map : mappings) {
+            Addr paddr, vaddr = map.first;
+            bool alloc_page = !(np->pTable->translate(vaddr, paddr));
+            np->replicatePage(vaddr, paddr, otc, ntc, alloc_page);
+        }
+
+        *np->memState = *memState;
+    }
+
+    if (CLONE_FILES & flags) {
+        /**
+         * The parent and child file descriptors are shared because the
+         * two FDArray pointers are pointing to the same FDArray. Opening
+         * and closing file descriptors will be visible to both processes.
+         */
+        np->fds = fds;
+    } else {
+        /**
+         * Copy the file descriptors from the old process into the new
+         * child process. The file descriptors entry can be opened and
+         * closed independently of the other process being considered. The
+         * host file descriptors are also dup'd so that the flags for the
+         * host file descriptor is independent of the other process.
+         */
+        for (int tgt_fd = 0; tgt_fd < fds->getSize(); tgt_fd++) {
+            std::shared_ptr<FDArray> nfds = np->fds;
+            std::shared_ptr<FDEntry> this_fde = (*fds)[tgt_fd];
+            if (!this_fde) {
+                nfds->setFDEntry(tgt_fd, nullptr);
+                continue;
+            }
+            nfds->setFDEntry(tgt_fd, this_fde->clone());
+
+            auto this_hbfd = std::dynamic_pointer_cast<HBFDEntry>(this_fde);
+            if (!this_hbfd)
+                continue;
+
+            int this_sim_fd = this_hbfd->getSimFD();
+            if (this_sim_fd <= 2)
+                continue;
+
+            int np_sim_fd = dup(this_sim_fd);
+            assert(np_sim_fd != -1);
+
+            auto nhbfd = std::dynamic_pointer_cast<HBFDEntry>((*nfds)[tgt_fd]);
+            nhbfd->setSimFD(np_sim_fd);
+        }
+    }
+
+    if (CLONE_THREAD & flags) {
+        np->_tgid = _tgid;
+        delete np->exitGroup;
+        np->exitGroup = exitGroup;
+    }
+
+    np->argv.insert(np->argv.end(), argv.begin(), argv.end());
+    np->envp.insert(np->envp.end(), envp.begin(), envp.end());
+}
 
 void
 Process::regStats()
 {
+    SimObject::regStats();
+
     using namespace Stats;
 
-    num_syscalls
-        .name(name() + ".num_syscalls")
+    numSyscalls
+        .name(name() + ".numSyscalls")
         .desc("Number of system calls")
         ;
-}
-
-//
-// static helper functions
-//
-int
-Process::openInputFile(const string &filename)
-{
-    int fd = open(filename.c_str(), O_RDONLY);
-
-    if (fd == -1) {
-        perror(NULL);
-        cerr << "unable to open \"" << filename << "\" for reading\n";
-        fatal("can't open input file");
-    }
-
-    return fd;
-}
-
-
-int
-Process::openOutputFile(const string &filename)
-{
-    int fd = open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0664);
-
-    if (fd == -1) {
-        perror(NULL);
-        cerr << "unable to open \"" << filename << "\" for writing\n";
-        fatal("can't open output file");
-    }
-
-    return fd;
 }
 
 ThreadContext *
 Process::findFreeContext()
 {
-    int size = contextIds.size();
-    ThreadContext *tc;
-    for (int i = 0; i < size; ++i) {
-        tc = system->getThreadContext(contextIds[i]);
-        if (tc->status() == ThreadContext::Halted) {
-            // inactive context, free to use
-            return tc;
+    for (auto &it : system->threadContexts) {
+        if (ThreadContext::Halted == it->status())
+            return it;
+    }
+    return nullptr;
+}
+
+void
+Process::revokeThreadContext(int context_id)
+{
+    std::vector<ContextID>::iterator it;
+    for (it = contextIds.begin(); it != contextIds.end(); it++) {
+        if (*it == context_id) {
+            contextIds.erase(it);
+            return;
         }
     }
-    return NULL;
+    warn("Unable to find thread context to revoke");
 }
 
 void
@@ -259,82 +299,11 @@ Process::initState()
     pTable->initState(tc);
 }
 
-// map simulator fd sim_fd to target fd tgt_fd
-void
-Process::dup_fd(int sim_fd, int tgt_fd)
+DrainState
+Process::drain()
 {
-    if (tgt_fd < 0 || tgt_fd > MAX_FD)
-        panic("Process::dup_fd tried to dup past MAX_FD (%d)", tgt_fd);
-
-    Process::FdMap *fdo = &fd_map[tgt_fd];
-    fdo->fd = sim_fd;
-}
-
-
-// generate new target fd for sim_fd
-int
-Process::alloc_fd(int sim_fd, const string& filename, int flags, int mode,
-                  bool pipe)
-{
-    // in case open() returns an error, don't allocate a new fd
-    if (sim_fd == -1)
-        return -1;
-
-    // find first free target fd
-    for (int free_fd = 0; free_fd <= MAX_FD; ++free_fd) {
-        Process::FdMap *fdo = &fd_map[free_fd];
-        if (fdo->fd == -1 && fdo->driver == NULL) {
-            fdo->fd = sim_fd;
-            fdo->filename = filename;
-            fdo->mode = mode;
-            fdo->fileOffset = 0;
-            fdo->flags = flags;
-            fdo->isPipe = pipe;
-            fdo->readPipeSource = 0;
-            return free_fd;
-        }
-    }
-
-    panic("Process::alloc_fd: out of file descriptors!");
-}
-
-
-// free target fd (e.g., after close)
-void
-Process::free_fd(int tgt_fd)
-{
-    Process::FdMap *fdo = &fd_map[tgt_fd];
-    if (fdo->fd == -1)
-        warn("Process::free_fd: request to free unused fd %d", tgt_fd);
-
-    fdo->fd = -1;
-    fdo->filename = "NULL";
-    fdo->mode = 0;
-    fdo->fileOffset = 0;
-    fdo->flags = 0;
-    fdo->isPipe = false;
-    fdo->readPipeSource = 0;
-    fdo->driver = NULL;
-}
-
-
-// look up simulator fd for given target fd
-int
-Process::sim_fd(int tgt_fd)
-{
-    if (tgt_fd < 0 || tgt_fd > MAX_FD)
-        return -1;
-
-    return fd_map[tgt_fd].fd;
-}
-
-Process::FdMap *
-Process::sim_fd_obj(int tgt_fd)
-{
-    if (tgt_fd < 0 || tgt_fd > MAX_FD)
-        return NULL;
-
-    return &fd_map[tgt_fd];
+    fds->updateFileOffsets();
+    return DrainState::Drained;
 }
 
 void
@@ -342,12 +311,36 @@ Process::allocateMem(Addr vaddr, int64_t size, bool clobber)
 {
     int npages = divCeil(size, (int64_t)PageBytes);
     Addr paddr = system->allocPhysPages(npages);
-    pTable->map(vaddr, paddr, size, clobber ? PageTableBase::Clobber : 0);
+    pTable->map(vaddr, paddr, size,
+                clobber ? PageTableBase::Clobber : PageTableBase::Zero);
+}
+
+void
+Process::replicatePage(Addr vaddr, Addr new_paddr, ThreadContext *old_tc,
+                       ThreadContext *new_tc, bool allocate_page)
+{
+    if (allocate_page)
+        new_paddr = system->allocPhysPages(1);
+
+    // Read from old physical page.
+    uint8_t *buf_p = new uint8_t[PageBytes];
+    old_tc->getMemProxy().readBlob(vaddr, buf_p, PageBytes);
+
+    // Create new mapping in process address space by clobbering existing
+    // mapping (if any existed) and then write to the new physical page.
+    bool clobber = true;
+    pTable->map(vaddr, new_paddr, PageBytes, clobber);
+    new_tc->getMemProxy().writeBlob(vaddr, buf_p, PageBytes);
+    delete[] buf_p;
 }
 
 bool
 Process::fixupStackFault(Addr vaddr)
 {
+    Addr stack_min = memState->getStackMin();
+    Addr stack_base = memState->getStackBase();
+    Addr max_stack_size = memState->getMaxStackSize();
+
     // Check if this is already on the stack and there's just no page there
     // yet.
     if (vaddr >= stack_min && vaddr < stack_base) {
@@ -364,341 +357,204 @@ Process::fixupStackFault(Addr vaddr)
                 fatal("Maximum stack size exceeded\n");
             allocateMem(stack_min, TheISA::PageBytes);
             inform("Increasing stack size by one page.");
-        };
+        }
+        memState->setStackMin(stack_min);
         return true;
     }
     return false;
 }
 
-// find all offsets for currently open files and save them
 void
-Process::fix_file_offsets()
+Process::serialize(CheckpointOut &cp) const
 {
-    Process::FdMap *fdo_stdin = &fd_map[STDIN_FILENO];
-    Process::FdMap *fdo_stdout = &fd_map[STDOUT_FILENO];
-    Process::FdMap *fdo_stderr = &fd_map[STDERR_FILENO];
-    string in = fdo_stdin->filename;
-    string out = fdo_stdout->filename;
-    string err = fdo_stderr->filename;
+    memState->serialize(cp);
+    pTable->serialize(cp);
+    /**
+     * Checkpoints for file descriptors currently do not work. Need to
+     * come back and fix them at a later date.
+     */
 
-    // initialize file descriptors to default: same as simulator
-    int stdin_fd, stdout_fd, stderr_fd;
-
-    if (in == "stdin" || in == "cin")
-        stdin_fd = STDIN_FILENO;
-    else if (in == "NULL")
-        stdin_fd = -1;
-    else {
-        // open standard in and seek to the right location
-        stdin_fd = Process::openInputFile(in);
-        if (lseek(stdin_fd, fdo_stdin->fileOffset, SEEK_SET) < 0)
-            panic("Unable to seek to correct location in file: %s", in);
-    }
-
-    if (out == "stdout" || out == "cout")
-        stdout_fd = STDOUT_FILENO;
-    else if (out == "stderr" || out == "cerr")
-        stdout_fd = STDERR_FILENO;
-    else if (out == "NULL")
-        stdout_fd = -1;
-    else {
-        stdout_fd = Process::openOutputFile(out);
-        if (lseek(stdout_fd, fdo_stdout->fileOffset, SEEK_SET) < 0)
-            panic("Unable to seek to correct location in file: %s", out);
-    }
-
-    if (err == "stdout" || err == "cout")
-        stderr_fd = STDOUT_FILENO;
-    else if (err == "stderr" || err == "cerr")
-        stderr_fd = STDERR_FILENO;
-    else if (err == "NULL")
-        stderr_fd = -1;
-    else if (err == out)
-        stderr_fd = stdout_fd;
-    else {
-        stderr_fd = Process::openOutputFile(err);
-        if (lseek(stderr_fd, fdo_stderr->fileOffset, SEEK_SET) < 0)
-            panic("Unable to seek to correct location in file: %s", err);
-    }
-
-    fdo_stdin->fd = stdin_fd;
-    fdo_stdout->fd = stdout_fd;
-    fdo_stderr->fd = stderr_fd;
-
-
-    for (int free_fd = 3; free_fd <= MAX_FD; ++free_fd) {
-        Process::FdMap *fdo = &fd_map[free_fd];
-        if (fdo->fd != -1) {
-            if (fdo->isPipe){
-                if (fdo->filename == "PIPE-WRITE")
-                    continue;
-                else {
-                    assert (fdo->filename == "PIPE-READ");
-                    //create a new pipe
-                    int fds[2];
-                    int pipe_retval = pipe(fds);
-
-                    if (pipe_retval < 0) {
-                        // error
-                        panic("Unable to create new pipe.");
-                    }
-                    fdo->fd = fds[0]; //set read pipe
-                    Process::FdMap *fdo_write = &fd_map[fdo->readPipeSource];
-                    if (fdo_write->filename != "PIPE-WRITE")
-                        panic ("Couldn't find write end of the pipe");
-
-                    fdo_write->fd = fds[1];//set write pipe
-               }
-            } else {
-                //Open file
-                int fd = open(fdo->filename.c_str(), fdo->flags, fdo->mode);
-
-                if (fd == -1)
-                    panic("Unable to open file: %s", fdo->filename);
-                fdo->fd = fd;
-
-                //Seek to correct location before checkpoint
-                if (lseek(fd, fdo->fileOffset, SEEK_SET) < 0)
-                    panic("Unable to seek to correct location in file: %s",
-                          fdo->filename);
-            }
-        }
-    }
-}
-
-void
-Process::find_file_offsets()
-{
-    for (int free_fd = 0; free_fd <= MAX_FD; ++free_fd) {
-        Process::FdMap *fdo = &fd_map[free_fd];
-        if (fdo->fd != -1) {
-            fdo->fileOffset = lseek(fdo->fd, 0, SEEK_CUR);
-        } else {
-            fdo->filename = "NULL";
-            fdo->fileOffset = 0;
-        }
-    }
-}
-
-void
-Process::setReadPipeSource(int read_pipe_fd, int source_fd)
-{
-    Process::FdMap *fdo = &fd_map[read_pipe_fd];
-    fdo->readPipeSource = source_fd;
-}
-
-void
-Process::FdMap::serialize(std::ostream &os)
-{
-    SERIALIZE_SCALAR(fd);
-    SERIALIZE_SCALAR(isPipe);
-    SERIALIZE_SCALAR(filename);
-    SERIALIZE_SCALAR(flags);
-    SERIALIZE_SCALAR(readPipeSource);
-    SERIALIZE_SCALAR(fileOffset);
-}
-
-void
-Process::FdMap::unserialize(Checkpoint *cp, const std::string &section)
-{
-    UNSERIALIZE_SCALAR(fd);
-    UNSERIALIZE_SCALAR(isPipe);
-    UNSERIALIZE_SCALAR(filename);
-    UNSERIALIZE_SCALAR(flags);
-    UNSERIALIZE_SCALAR(readPipeSource);
-    UNSERIALIZE_SCALAR(fileOffset);
-}
-
-void
-Process::serialize(std::ostream &os)
-{
-    SERIALIZE_SCALAR(brk_point);
-    SERIALIZE_SCALAR(stack_base);
-    SERIALIZE_SCALAR(stack_size);
-    SERIALIZE_SCALAR(stack_min);
-    SERIALIZE_SCALAR(next_thread_stack_base);
-    SERIALIZE_SCALAR(mmap_start);
-    SERIALIZE_SCALAR(mmap_end);
-    SERIALIZE_SCALAR(nxm_start);
-    SERIALIZE_SCALAR(nxm_end);
-    find_file_offsets();
-    pTable->serialize(os);
-    for (int x = 0; x <= MAX_FD; x++) {
-        nameOut(os, csprintf("%s.FdMap%d", name(), x));
-        fd_map[x].serialize(os);
-    }
-    SERIALIZE_SCALAR(M5_pid);
+    warn("Checkpoints for file descriptors currently do not work.");
+#if 0
+    for (int x = 0; x < fds->getSize(); x++)
+        (*fds)[x].serializeSection(cp, csprintf("FDEntry%d", x));
+#endif
 
 }
 
 void
-Process::unserialize(Checkpoint *cp, const std::string &section)
+Process::unserialize(CheckpointIn &cp)
 {
-    UNSERIALIZE_SCALAR(brk_point);
-    UNSERIALIZE_SCALAR(stack_base);
-    UNSERIALIZE_SCALAR(stack_size);
-    UNSERIALIZE_SCALAR(stack_min);
-    UNSERIALIZE_SCALAR(next_thread_stack_base);
-    UNSERIALIZE_SCALAR(mmap_start);
-    UNSERIALIZE_SCALAR(mmap_end);
-    UNSERIALIZE_SCALAR(nxm_start);
-    UNSERIALIZE_SCALAR(nxm_end);
-    pTable->unserialize(cp, section);
-    for (int x = 0; x <= MAX_FD; x++) {
-        fd_map[x].unserialize(cp, csprintf("%s.FdMap%d", section, x));
-    }
-    fix_file_offsets();
-    UNSERIALIZE_OPT_SCALAR(M5_pid);
+    memState->unserialize(cp);
+    pTable->unserialize(cp);
+    /**
+     * Checkpoints for file descriptors currently do not work. Need to
+     * come back and fix them at a later date.
+     */
+    warn("Checkpoints for file descriptors currently do not work.");
+#if 0
+    for (int x = 0; x < fds->getSize(); x++)
+        (*fds)[x]->unserializeSection(cp, csprintf("FDEntry%d", x));
+    fds->restoreFileOffsets();
+#endif
     // The above returns a bool so that you could do something if you don't
     // find the param in the checkpoint if you wanted to, like set a default
-    // but in this case we'll just stick with the instantianted value if not
-    // found.   
+    // but in this case we'll just stick with the instantiated value if not
+    // found.
 }
-
 
 bool
 Process::map(Addr vaddr, Addr paddr, int size, bool cacheable)
 {
     pTable->map(vaddr, paddr, size,
-                cacheable ? 0 : PageTableBase::Uncacheable);
+                cacheable ? PageTableBase::Zero : PageTableBase::Uncacheable);
     return true;
 }
 
-
-////////////////////////////////////////////////////////////////////////
-//
-// LiveProcess member definitions
-//
-////////////////////////////////////////////////////////////////////////
-
-
-LiveProcess::LiveProcess(LiveProcessParams *params, ObjectFile *_objFile)
-    : Process(params), objFile(_objFile),
-      argv(params->cmd), envp(params->env), cwd(params->cwd),
-      __uid(params->uid), __euid(params->euid),
-      __gid(params->gid), __egid(params->egid),
-      __pid(params->pid), __ppid(params->ppid),
-      drivers(params->drivers)
-{
-
-    // load up symbols, if any... these may be used for debugging or
-    // profiling.
-    if (!debugSymbolTable) {
-        debugSymbolTable = new SymbolTable();
-        if (!objFile->loadGlobalSymbols(debugSymbolTable) ||
-            !objFile->loadLocalSymbols(debugSymbolTable) ||
-            !objFile->loadWeakSymbols(debugSymbolTable)) {
-            // didn't load any symbols
-            delete debugSymbolTable;
-            debugSymbolTable = NULL;
-        }
-    }
-}
-
 void
-LiveProcess::syscall(int64_t callnum, ThreadContext *tc)
+Process::syscall(int64_t callnum, ThreadContext *tc, Fault *fault)
 {
-    num_syscalls++;
+    numSyscalls++;
 
     SyscallDesc *desc = getDesc(callnum);
-    if (desc == NULL)
+    if (desc == nullptr)
         fatal("Syscall %d out of range", callnum);
 
-    desc->doSyscall(callnum, this, tc);
+    desc->doSyscall(callnum, this, tc, fault);
 }
 
 IntReg
-LiveProcess::getSyscallArg(ThreadContext *tc, int &i, int width)
+Process::getSyscallArg(ThreadContext *tc, int &i, int width)
 {
     return getSyscallArg(tc, i);
 }
 
-
 EmulatedDriver *
-LiveProcess::findDriver(std::string filename)
+Process::findDriver(std::string filename)
 {
     for (EmulatedDriver *d : drivers) {
         if (d->match(filename))
             return d;
     }
 
-    return NULL;
+    return nullptr;
 }
 
-
-LiveProcess *
-LiveProcess::create(LiveProcessParams * params)
+void
+Process::updateBias()
 {
-    LiveProcess *process = NULL;
+    ObjectFile *interp = objFile->getInterpreter();
 
-    string executable =
-        params->executable == "" ? params->cmd[0] : params->executable;
-    ObjectFile *objFile = createObjectFile(executable);
-    if (objFile == NULL) {
+    if (!interp || !interp->relocatable())
+        return;
+
+    // Determine how large the interpreters footprint will be in the process
+    // address space.
+    Addr interp_mapsize = roundUp(interp->mapSize(), TheISA::PageBytes);
+
+    // We are allocating the memory area; set the bias to the lowest address
+    // in the allocated memory region.
+    Addr mmap_end = memState->getMmapEnd();
+    Addr ld_bias = mmapGrowsDown() ? mmap_end - interp_mapsize : mmap_end;
+
+    // Adjust the process mmap area to give the interpreter room; the real
+    // execve system call would just invoke the kernel's internal mmap
+    // functions to make these adjustments.
+    mmap_end = mmapGrowsDown() ? ld_bias : mmap_end + interp_mapsize;
+    memState->setMmapEnd(mmap_end);
+
+    interp->updateBias(ld_bias);
+}
+
+ObjectFile *
+Process::getInterpreter()
+{
+    return objFile->getInterpreter();
+}
+
+Addr
+Process::getBias()
+{
+    ObjectFile *interp = getInterpreter();
+
+    return interp ? interp->bias() : objFile->bias();
+}
+
+Addr
+Process::getStartPC()
+{
+    ObjectFile *interp = getInterpreter();
+
+    return interp ? interp->entryPoint() : objFile->entryPoint();
+}
+
+Process *
+ProcessParams::create()
+{
+    Process *process = nullptr;
+
+    // If not specified, set the executable parameter equal to the
+    // simulated system's zeroth command line parameter
+    if (executable == "") {
+        executable = cmd[0];
+    }
+
+    ObjectFile *obj_file = createObjectFile(executable);
+    if (obj_file == nullptr) {
         fatal("Can't load object file %s", executable);
     }
 
-    if (objFile->isDynamic())
-       fatal("Object file is a dynamic executable however only static "
-             "executables are supported!\n       Please recompile your "
-             "executable as a static binary and try again.\n");
-
 #if THE_ISA == ALPHA_ISA
-    if (objFile->getArch() != ObjectFile::Alpha)
+    if (obj_file->getArch() != ObjectFile::Alpha)
         fatal("Object file architecture does not match compiled ISA (Alpha).");
 
-    switch (objFile->getOpSys()) {
-      case ObjectFile::Tru64:
-        process = new AlphaTru64Process(params, objFile);
-        break;
-
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
-        process = new AlphaLinuxProcess(params, objFile);
+        process = new AlphaLinuxProcess(this, obj_file);
         break;
 
       default:
         fatal("Unknown/unsupported operating system.");
     }
 #elif THE_ISA == SPARC_ISA
-    if (objFile->getArch() != ObjectFile::SPARC64 &&
-        objFile->getArch() != ObjectFile::SPARC32)
+    if (obj_file->getArch() != ObjectFile::SPARC64 &&
+        obj_file->getArch() != ObjectFile::SPARC32)
         fatal("Object file architecture does not match compiled ISA (SPARC).");
-    switch (objFile->getOpSys()) {
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
-        if (objFile->getArch() == ObjectFile::SPARC64) {
-            process = new Sparc64LinuxProcess(params, objFile);
+        if (obj_file->getArch() == ObjectFile::SPARC64) {
+            process = new Sparc64LinuxProcess(this, obj_file);
         } else {
-            process = new Sparc32LinuxProcess(params, objFile);
+            process = new Sparc32LinuxProcess(this, obj_file);
         }
         break;
 
-
       case ObjectFile::Solaris:
-        process = new SparcSolarisProcess(params, objFile);
+        process = new SparcSolarisProcess(this, obj_file);
         break;
 
       default:
         fatal("Unknown/unsupported operating system.");
     }
 #elif THE_ISA == X86_ISA
-    if (objFile->getArch() != ObjectFile::X86_64 &&
-        objFile->getArch() != ObjectFile::I386)
+    if (obj_file->getArch() != ObjectFile::X86_64 &&
+        obj_file->getArch() != ObjectFile::I386)
         fatal("Object file architecture does not match compiled ISA (x86).");
-    switch (objFile->getOpSys()) {
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
-        if (objFile->getArch() == ObjectFile::X86_64) {
-            process = new X86_64LinuxProcess(params, objFile);
+        if (obj_file->getArch() == ObjectFile::X86_64) {
+            process = new X86_64LinuxProcess(this, obj_file);
         } else {
-            process = new I386LinuxProcess(params, objFile);
+            process = new I386LinuxProcess(this, obj_file);
         }
         break;
 
@@ -706,44 +562,44 @@ LiveProcess::create(LiveProcessParams * params)
         fatal("Unknown/unsupported operating system.");
     }
 #elif THE_ISA == MIPS_ISA
-    if (objFile->getArch() != ObjectFile::Mips)
+    if (obj_file->getArch() != ObjectFile::Mips)
         fatal("Object file architecture does not match compiled ISA (MIPS).");
-    switch (objFile->getOpSys()) {
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
-        process = new MipsLinuxProcess(params, objFile);
+        process = new MipsLinuxProcess(this, obj_file);
         break;
 
       default:
         fatal("Unknown/unsupported operating system.");
     }
 #elif THE_ISA == ARM_ISA
-    ObjectFile::Arch arch = objFile->getArch();
+    ObjectFile::Arch arch = obj_file->getArch();
     if (arch != ObjectFile::Arm && arch != ObjectFile::Thumb &&
         arch != ObjectFile::Arm64)
         fatal("Object file architecture does not match compiled ISA (ARM).");
-    switch (objFile->getOpSys()) {
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
         if (arch == ObjectFile::Arm64) {
-            process = new ArmLinuxProcess64(params, objFile,
-                                            objFile->getArch());
+            process = new ArmLinuxProcess64(this, obj_file,
+                                            obj_file->getArch());
         } else {
-            process = new ArmLinuxProcess32(params, objFile,
-                                            objFile->getArch());
+            process = new ArmLinuxProcess32(this, obj_file,
+                                            obj_file->getArch());
         }
         break;
       case ObjectFile::FreeBSD:
         if (arch == ObjectFile::Arm64) {
-            process = new ArmFreebsdProcess64(params, objFile,
-                                              objFile->getArch());
+            process = new ArmFreebsdProcess64(this, obj_file,
+                                              obj_file->getArch());
         } else {
-            process = new ArmFreebsdProcess32(params, objFile,
-                                              objFile->getArch());
+            process = new ArmFreebsdProcess32(this, obj_file,
+                                              obj_file->getArch());
         }
         break;
       case ObjectFile::LinuxArmOABI:
@@ -753,16 +609,29 @@ LiveProcess::create(LiveProcessParams * params)
         fatal("Unknown/unsupported operating system.");
     }
 #elif THE_ISA == POWER_ISA
-    if (objFile->getArch() != ObjectFile::Power)
+    if (obj_file->getArch() != ObjectFile::Power)
         fatal("Object file architecture does not match compiled ISA (Power).");
-    switch (objFile->getOpSys()) {
+    switch (obj_file->getOpSys()) {
       case ObjectFile::UnknownOpSys:
         warn("Unknown operating system; assuming Linux.");
         // fall through
       case ObjectFile::Linux:
-        process = new PowerLinuxProcess(params, objFile);
+        process = new PowerLinuxProcess(this, obj_file);
         break;
 
+      default:
+        fatal("Unknown/unsupported operating system.");
+    }
+#elif THE_ISA == RISCV_ISA
+    if (obj_file->getArch() != ObjectFile::Riscv)
+        fatal("Object file architecture does not match compiled ISA (RISCV).");
+    switch (obj_file->getOpSys()) {
+      case ObjectFile::UnknownOpSys:
+        warn("Unknown operating system; assuming Linux.");
+        // fall through
+      case ObjectFile::Linux:
+        process = new RiscvLinuxProcess(this, obj_file);
+        break;
       default:
         fatal("Unknown/unsupported operating system.");
     }
@@ -770,13 +639,21 @@ LiveProcess::create(LiveProcessParams * params)
 #error "THE_ISA not set"
 #endif
 
-    if (process == NULL)
+    if (process == nullptr)
         fatal("Unknown error creating process object.");
     return process;
 }
 
-LiveProcess *
-LiveProcessParams::create()
+std::string
+Process::fullPath(const std::string &file_name)
 {
-    return LiveProcess::create(this);
+    if (file_name[0] == '/' || cwd.empty())
+        return file_name;
+
+    std::string full = cwd;
+
+    if (cwd[cwd.size() - 1] != '/')
+        full += '/';
+
+    return full + file_name;
 }

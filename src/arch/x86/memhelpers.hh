@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2011 Google
+ * Copyright (c) 2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,25 +32,28 @@
 #ifndef __ARCH_X86_MEMHELPERS_HH__
 #define __ARCH_X86_MEMHELPERS_HH__
 
+#include <array>
+
 #include "base/types.hh"
+#include "cpu/exec_context.hh"
 #include "sim/byteswap.hh"
 #include "sim/insttracer.hh"
 
 namespace X86ISA
 {
 
-template <class XC>
-Fault
-readMemTiming(XC *xc, Trace::InstRecord *traceData, Addr addr,
-        uint64_t &mem, unsigned dataSize, unsigned flags)
+/// Initiate a read from memory in timing mode.
+static Fault
+initiateMemRead(ExecContext *xc, Trace::InstRecord *traceData, Addr addr,
+                unsigned dataSize, Request::Flags flags)
 {
-    return xc->readMem(addr, (uint8_t *)&mem, dataSize, flags);
+    return xc->initiateMemRead(addr, dataSize, flags);
 }
 
-static inline uint64_t
-getMem(PacketPtr pkt, unsigned dataSize, Trace::InstRecord *traceData)
+static void
+getMem(PacketPtr pkt, uint64_t &mem, unsigned dataSize,
+       Trace::InstRecord *traceData)
 {
-    uint64_t mem;
     switch (dataSize) {
       case 1:
         mem = pkt->get<uint8_t>();
@@ -68,16 +72,37 @@ getMem(PacketPtr pkt, unsigned dataSize, Trace::InstRecord *traceData)
     }
     if (traceData)
         traceData->setData(mem);
-    return mem;
 }
 
-template <class XC>
-Fault
-readMemAtomic(XC *xc, Trace::InstRecord *traceData, Addr addr, uint64_t &mem,
-        unsigned dataSize, unsigned flags)
+
+template <size_t N>
+void
+getMem(PacketPtr pkt, std::array<uint64_t, N> &mem, unsigned dataSize,
+       Trace::InstRecord *traceData)
+{
+    assert(dataSize >= 8);
+    assert((dataSize % 8) == 0);
+
+    int num_words = dataSize / 8;
+    assert(num_words <= N);
+
+    auto pkt_data = pkt->getConstPtr<const uint64_t>();
+    for (int i = 0; i < num_words; ++i)
+        mem[i] = gtoh(pkt_data[i]);
+
+    // traceData record only has space for 64 bits, so we just record
+    // the first qword
+    if (traceData)
+        traceData->setData(mem[0]);
+}
+
+
+static Fault
+readMemAtomic(ExecContext *xc, Trace::InstRecord *traceData, Addr addr,
+              uint64_t &mem, unsigned dataSize, Request::Flags flags)
 {
     memset(&mem, 0, sizeof(mem));
-    Fault fault = readMemTiming(xc, traceData, addr, mem, dataSize, flags);
+    Fault fault = xc->readMem(addr, (uint8_t *)&mem, dataSize, flags);
     if (fault == NoFault) {
         // If LE to LE, this is a nop, if LE to BE, the actual data ends up
         // in the right place because the LSBs where at the low addresses on
@@ -89,10 +114,34 @@ readMemAtomic(XC *xc, Trace::InstRecord *traceData, Addr addr, uint64_t &mem,
     return fault;
 }
 
-template <class XC>
+template <size_t N>
 Fault
-writeMemTiming(XC *xc, Trace::InstRecord *traceData, uint64_t mem,
-        unsigned dataSize, Addr addr, unsigned flags, uint64_t *res)
+readMemAtomic(ExecContext *xc, Trace::InstRecord *traceData, Addr addr,
+              std::array<uint64_t, N> &mem, unsigned dataSize,
+              unsigned flags)
+{
+    assert(dataSize >= 8);
+    assert((dataSize % 8) == 0);
+
+    Fault fault = xc->readMem(addr, (uint8_t *)&mem, dataSize, flags);
+
+    if (fault == NoFault) {
+        int num_words = dataSize / 8;
+        assert(num_words <= N);
+
+        for (int i = 0; i < num_words; ++i)
+            mem[i] = gtoh(mem[i]);
+
+        if (traceData)
+            traceData->setData(mem[0]);
+    }
+    return fault;
+}
+
+static Fault
+writeMemTiming(ExecContext *xc, Trace::InstRecord *traceData, uint64_t mem,
+               unsigned dataSize, Addr addr, Request::Flags flags,
+               uint64_t *res)
 {
     if (traceData) {
         traceData->setData(mem);
@@ -101,16 +150,67 @@ writeMemTiming(XC *xc, Trace::InstRecord *traceData, uint64_t mem,
     return xc->writeMem((uint8_t *)&mem, dataSize, addr, flags, res);
 }
 
-template <class XC>
+template <size_t N>
 Fault
-writeMemAtomic(XC *xc, Trace::InstRecord *traceData, uint64_t mem,
-        unsigned dataSize, Addr addr, unsigned flags, uint64_t *res)
+writeMemTiming(ExecContext *xc, Trace::InstRecord *traceData,
+               std::array<uint64_t, N> &mem, unsigned dataSize,
+               Addr addr, unsigned flags, uint64_t *res)
 {
-    Fault fault = writeMemTiming(xc, traceData, mem, dataSize, addr, flags,
-            res);
+    assert(dataSize >= 8);
+    assert((dataSize % 8) == 0);
+
+    if (traceData) {
+        traceData->setData(mem[0]);
+    }
+
+    int num_words = dataSize / 8;
+    assert(num_words <= N);
+
+    for (int i = 0; i < num_words; ++i)
+        mem[i] = htog(mem[i]);
+
+    return xc->writeMem((uint8_t *)&mem, dataSize, addr, flags, res);
+}
+
+static Fault
+writeMemAtomic(ExecContext *xc, Trace::InstRecord *traceData, uint64_t mem,
+               unsigned dataSize, Addr addr, Request::Flags flags,
+               uint64_t *res)
+{
+    if (traceData) {
+        traceData->setData(mem);
+    }
+    uint64_t host_mem = TheISA::htog(mem);
+    Fault fault =
+          xc->writeMem((uint8_t *)&host_mem, dataSize, addr, flags, res);
     if (fault == NoFault && res != NULL) {
         *res = gtoh(*res);
     }
+    return fault;
+}
+
+template <size_t N>
+Fault
+writeMemAtomic(ExecContext *xc, Trace::InstRecord *traceData,
+               std::array<uint64_t, N> &mem, unsigned dataSize,
+               Addr addr, unsigned flags, uint64_t *res)
+{
+    if (traceData) {
+        traceData->setData(mem[0]);
+    }
+
+    int num_words = dataSize / 8;
+    assert(num_words <= N);
+
+    for (int i = 0; i < num_words; ++i)
+        mem[i] = htog(mem[i]);
+
+    Fault fault = xc->writeMem((uint8_t *)&mem, dataSize, addr, flags, res);
+
+    if (fault == NoFault && res != NULL) {
+        *res = gtoh(*res);
+    }
+
     return fault;
 }
 

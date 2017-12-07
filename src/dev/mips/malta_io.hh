@@ -120,8 +120,8 @@ class MaltaIO : public BasicPioDevice
      */
     MaltaIO(const Params *p);
 
-    virtual Tick read(PacketPtr pkt);
-    virtual Tick write(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
+    Tick write(PacketPtr pkt) override;
 
 
     /** Post an Interrupt to the CPU */
@@ -130,23 +130,13 @@ class MaltaIO : public BasicPioDevice
     /** Clear an Interrupt to the CPU */
     void clearIntr(uint8_t interrupt);
 
-    /**
-     * Serialize this object to the given output stream.
-     * @param os The stream to serialize to.
-     */
-    virtual void serialize(std::ostream &os);
-
-    /**
-     * Reconstruct the state of this object from a checkpoint.
-     * @param cp The checkpoint use.
-     * @param section The section name of this object
-     */
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
     /**
      * Start running.
      */
-    virtual void startup();
+    void startup() override;
 
 };
 

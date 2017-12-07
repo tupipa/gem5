@@ -46,14 +46,13 @@
 #include <vector>
 
 #include "base/bitunion.hh"
-#include "base/misc.hh"
 #include "base/types.hh"
 #include "base/trie.hh"
-#include "cpu/thread_context.hh"
 #include "arch/x86/system.hh"
 #include "debug/MMU.hh"
 
 class Checkpoint;
+class ThreadContext;
 
 namespace X86ISA
 {
@@ -97,7 +96,7 @@ namespace X86ISA
     EndBitUnion(PageTableEntry)
 
 
-    struct TlbEntry
+    struct TlbEntry : public Serializable
     {
         // The base of the physical page.
         Addr paddr;
@@ -130,7 +129,7 @@ namespace X86ISA
 
         TlbEntry(Addr asn, Addr _vaddr, Addr _paddr,
                  bool uncacheable, bool read_only);
-        TlbEntry() {}
+        TlbEntry();
 
         void
         updateVaddr(Addr new_vaddr)
@@ -149,8 +148,8 @@ namespace X86ISA
             return (1 << logBytes);
         }
 
-        void serialize(std::ostream &os);
-        void unserialize(Checkpoint *cp, const std::string &section);
+        void serialize(CheckpointOut &cp) const override;
+        void unserialize(CheckpointIn &cp) override;
     };
 
     /** The size of each level of the page table expressed in base 2

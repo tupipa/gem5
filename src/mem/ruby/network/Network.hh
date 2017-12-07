@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2017 ARM Limited
+ * All rights reserved.
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 1999-2008 Mark D. Hill and David A. Wood
  * All rights reserved.
  *
@@ -42,13 +54,17 @@
 
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "base/addr_range.hh"
+#include "base/types.hh"
+#include "mem/packet.hh"
 #include "mem/protocol/LinkDirection.hh"
 #include "mem/protocol/MessageSizeType.hh"
+#include "mem/ruby/common/MachineID.hh"
 #include "mem/ruby/common/TypeDefines.hh"
 #include "mem/ruby/network/Topology.hh"
-#include "mem/packet.hh"
 #include "params/RubyNetwork.hh"
 #include "sim/clocked_object.hh"
 
@@ -61,7 +77,7 @@ class Network : public ClockedObject
     typedef RubyNetworkParams Params;
     Network(const Params *p);
     const Params * params() const
-    { return dynamic_cast<const Params *>(_params);}
+    { return dynamic_cast<const Params *>(_params); }
 
     virtual ~Network();
     virtual void init();
@@ -72,20 +88,22 @@ class Network : public ClockedObject
     static uint32_t MessageSizeType_to_int(MessageSizeType size_type);
 
     // returns the queue requested for the given component
-    virtual void setToNetQueue(NodeID id, bool ordered, int netNumber,
-                               std::string vnet_type, MessageBuffer *b) = 0;
+    void setToNetQueue(NodeID id, bool ordered, int netNumber,
+                               std::string vnet_type, MessageBuffer *b);
     virtual void setFromNetQueue(NodeID id, bool ordered, int netNumber,
-                                 std::string vnet_type, MessageBuffer *b) = 0;
+                                 std::string vnet_type, MessageBuffer *b);
 
-    virtual void makeOutLink(SwitchID src, NodeID dest, BasicLink* link,
-                             LinkDirection direction,
+    virtual void checkNetworkAllocation(NodeID id, bool ordered,
+        int network_num, std::string vnet_type);
+
+    virtual void makeExtOutLink(SwitchID src, NodeID dest, BasicLink* link,
                              const NetDest& routing_table_entry) = 0;
-    virtual void makeInLink(NodeID src, SwitchID dest, BasicLink* link,
-                            LinkDirection direction,
+    virtual void makeExtInLink(NodeID src, SwitchID dest, BasicLink* link,
                             const NetDest& routing_table_entry) = 0;
     virtual void makeInternalLink(SwitchID src, SwitchID dest, BasicLink* link,
-                                  LinkDirection direction,
-                                  const NetDest& routing_table_entry) = 0;
+                                  const NetDest& routing_table_entry,
+                                  PortDirection src_outport,
+                                  PortDirection dst_inport) = 0;
 
     virtual void collateStats() = 0;
     virtual void print(std::ostream& out) const = 0;
@@ -100,6 +118,20 @@ class Network : public ClockedObject
     virtual uint32_t functionalWrite(Packet *pkt)
     { fatal("Functional write not implemented.\n"); }
 
+    /**
+     * Map an address to the correct NodeID
+     *
+     * This function traverses the global address map to find the
+     * NodeID that corresponds to the given address and the type of
+     * the destination. For example for a request to a directory this
+     * function will return the NodeID of the right directory.
+     *
+     * @param the destination address
+     * @param the type of the destination
+     * @return the NodeID of the destination
+     */
+    NodeID addressToNodeID(Addr addr, MachineType mtype);
+
   protected:
     // Private copy constructor and assignment operator
     Network(const Network& obj);
@@ -107,6 +139,7 @@ class Network : public ClockedObject
 
     uint32_t m_nodes;
     static uint32_t m_virtual_networks;
+    std::vector<std::string> m_vnet_type_names;
     Topology* m_topology_ptr;
     static uint32_t m_control_msg_size;
     static uint32_t m_data_msg_size;
@@ -114,8 +147,6 @@ class Network : public ClockedObject
     // vector of queues from the components
     std::vector<std::vector<MessageBuffer*> > m_toNetQueues;
     std::vector<std::vector<MessageBuffer*> > m_fromNetQueues;
-
-    std::vector<bool> m_in_use;
     std::vector<bool> m_ordered;
 
   private:
@@ -136,6 +167,13 @@ class Network : public ClockedObject
 
         void process() {ctr->collateStats();}
     };
+
+    // Global address map
+    struct AddrMapNode {
+        NodeID id;
+        AddrRangeList ranges;
+    };
+    std::unordered_multimap<MachineType, AddrMapNode> addrMap;
 };
 
 inline std::ostream&

@@ -49,8 +49,9 @@
 #include <fstream>
 #include <memory>
 
-#include "base/bitmap.hh"
+#include "base/bmpwriter.hh"
 #include "base/framebuffer.hh"
+#include "base/output.hh"
 #include "dev/arm/amba_device.hh"
 #include "params/Pl111.hh"
 #include "sim/serialize.hh"
@@ -265,10 +266,10 @@ class Pl111: public AmbaDmaDevice
     VncInput *vnc;
 
     /** Helper to write out bitmaps */
-    Bitmap bmp;
+    BmpWriter bmp;
 
     /** Picture of what the current frame buffer looks like */
-    std::ostream *pic;
+    OutputStream *pic;
 
     /** Frame buffer width - pixels per line */
     uint16_t width;
@@ -324,10 +325,10 @@ class Pl111: public AmbaDmaDevice
     void dmaDone();
 
     /** DMA framebuffer read event */
-    EventWrapper<Pl111, &Pl111::readFramebuffer> readEvent;
+    EventFunctionWrapper readEvent;
 
     /** Fill fifo */
-    EventWrapper<Pl111, &Pl111::fillFifo> fillFifoEvent;
+    EventFunctionWrapper fillFifoEvent;
 
     /**@{*/
     /**
@@ -353,7 +354,7 @@ class Pl111: public AmbaDmaDevice
     /**@}*/
 
     /** Wrapper to create an event out of the interrupt */
-    EventWrapper<Pl111, &Pl111::generateInterrupt> intEvent;
+    EventFunctionWrapper intEvent;
 
     bool enableCapture;
 
@@ -368,18 +369,18 @@ class Pl111: public AmbaDmaDevice
     Pl111(const Params *p);
     ~Pl111();
 
-    virtual Tick read(PacketPtr pkt);
-    virtual Tick write(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
+    Tick write(PacketPtr pkt) override;
 
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
     /**
      * Determine the address ranges that this device responds to.
      *
      * @return a list of non-overlapping address ranges
      */
-    AddrRangeList getAddrRanges() const;
+    AddrRangeList getAddrRanges() const override;
 };
 
 #endif

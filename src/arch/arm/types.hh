@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2012-2013 ARM Limited
+ * Copyright (c) 2010, 2012-2013, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -45,8 +45,7 @@
 
 #include "arch/generic/types.hh"
 #include "base/bitunion.hh"
-#include "base/hashmap.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/types.hh"
 #include "debug/Decoder.hh"
 
@@ -483,9 +482,9 @@ namespace ArmISA
         }
 
         void
-        serialize(std::ostream &os)
+        serialize(CheckpointOut &cp) const override
         {
-            Base::serialize(os);
+            Base::serialize(cp);
             SERIALIZE_SCALAR(flags);
             SERIALIZE_SCALAR(_size);
             SERIALIZE_SCALAR(nextFlags);
@@ -494,9 +493,9 @@ namespace ArmISA
         }
 
         void
-        unserialize(Checkpoint *cp, const std::string &section)
+        unserialize(CheckpointIn &cp) override
         {
-            Base::unserialize(cp, section);
+            Base::unserialize(cp);
             UNSERIALIZE_SCALAR(flags);
             UNSERIALIZE_SCALAR(_size);
             UNSERIALIZE_SCALAR(nextFlags);
@@ -524,9 +523,6 @@ namespace ArmISA
         SXTW = 6,
         SXTX = 7
     };
-
-    typedef uint64_t LargestRead;
-    // Need to use 64 bits to make sure that read requests get handled properly
 
     typedef int RegContextParam;
     typedef int RegContextVal;
@@ -625,7 +621,8 @@ namespace ArmISA
         EC_STACK_PTR_ALIGNMENT     = 0x26,
         EC_FP_EXCEPTION            = 0x28,
         EC_FP_EXCEPTION_64         = 0x2C,
-        EC_SERROR                  = 0x2F
+        EC_SERROR                  = 0x2F,
+        EC_SOFTWARE_BREAKPOINT     = 0x38,
     };
 
     /**
@@ -740,7 +737,7 @@ namespace ArmISA
 
 } // namespace ArmISA
 
-__hash_namespace_begin
+namespace std {
 
 template<>
 struct hash<ArmISA::ExtMachInst> :
@@ -752,6 +749,6 @@ struct hash<ArmISA::ExtMachInst> :
 
 };
 
-__hash_namespace_end
+}
 
 #endif

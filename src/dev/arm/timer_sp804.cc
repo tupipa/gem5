@@ -37,12 +37,13 @@
  * Authors: Ali Saidi
  */
 
+#include "dev/arm/timer_sp804.hh"
+
 #include "base/intmath.hh"
 #include "base/trace.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/Timer.hh"
 #include "dev/arm/base_gic.hh"
-#include "dev/arm/timer_sp804.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 
@@ -55,7 +56,8 @@ Sp804::Sp804(Params *p)
 
 Sp804::Timer::Timer(std::string __name, Sp804 *_parent, int int_num, Tick _clock)
     : _name(__name), parent(_parent), intNum(int_num), clock(_clock), control(0x20),
-      rawInt(false), pendingInt(false), loadValue(0xffffffff), zeroEvent(this)
+      rawInt(false), pendingInt(false), loadValue(0xffffffff),
+      zeroEvent([this]{ counterAtZero(); }, name())
 {
 }
 
@@ -217,7 +219,7 @@ Sp804::Timer::counterAtZero()
 }
 
 void
-Sp804::Timer::serialize(std::ostream &os)
+Sp804::Timer::serialize(CheckpointOut &cp) const
 {
     DPRINTF(Checkpoint, "Serializing Arm Sp804\n");
 
@@ -239,7 +241,7 @@ Sp804::Timer::serialize(std::ostream &os)
 }
 
 void
-Sp804::Timer::unserialize(Checkpoint *cp, const std::string &section)
+Sp804::Timer::unserialize(CheckpointIn &cp)
 {
     DPRINTF(Checkpoint, "Unserializing Arm Sp804\n");
 
@@ -264,19 +266,17 @@ Sp804::Timer::unserialize(Checkpoint *cp, const std::string &section)
 
 
 void
-Sp804::serialize(std::ostream &os)
+Sp804::serialize(CheckpointOut &cp) const
 {
-    nameOut(os, csprintf("%s.timer0", name()));
-    timer0.serialize(os);
-    nameOut(os, csprintf("%s.timer1", name()));
-    timer1.serialize(os);
+    timer0.serializeSection(cp, "timer0");
+    timer1.serializeSection(cp, "timer1");
 }
 
 void
-Sp804::unserialize(Checkpoint *cp, const std::string &section)
+Sp804::unserialize(CheckpointIn &cp)
 {
-    timer0.unserialize(cp, csprintf("%s.timer0", section));
-    timer1.unserialize(cp, csprintf("%s.timer1", section));
+    timer0.unserializeSection(cp, "timer0");
+    timer1.unserializeSection(cp, "timer1");
 }
 
 Sp804 *

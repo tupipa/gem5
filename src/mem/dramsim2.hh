@@ -45,8 +45,8 @@
 #define __MEM_DRAMSIM2_HH__
 
 #include <queue>
+#include <unordered_map>
 
-#include "base/hashmap.hh"
 #include "mem/abstract_mem.hh"
 #include "mem/dramsim2_wrapper.hh"
 #include "mem/qport.hh"
@@ -114,8 +114,8 @@ class DRAMSim2 : public AbstractMemory
      * done so that we can return the right packet on completion from
      * DRAMSim.
      */
-    m5::hash_map<Addr, std::queue<PacketPtr> > outstandingReads;
-    m5::hash_map<Addr, std::queue<PacketPtr> > outstandingWrites;
+    std::unordered_map<Addr, std::queue<PacketPtr> > outstandingReads;
+    std::unordered_map<Addr, std::queue<PacketPtr> > outstandingWrites;
 
     /**
      * Count the number of outstanding transactions so that we can
@@ -131,12 +131,6 @@ class DRAMSim2 : public AbstractMemory
      * responses back without any flow control.
      */
     std::deque<PacketPtr> responseQueue;
-
-    /**
-     * If we need to drain, keep the drain manager around until we're
-     * done here.
-     */
-    DrainManager *drainManager;
 
     unsigned int nbrOutstanding() const;
 
@@ -154,7 +148,7 @@ class DRAMSim2 : public AbstractMemory
     /**
      * Event to schedule sending of responses
      */
-    EventWrapper<DRAMSim2, &DRAMSim2::sendResponse> sendResponseEvent;
+    EventFunctionWrapper sendResponseEvent;
 
     /**
      * Progress the controller one clock cycle.
@@ -164,13 +158,13 @@ class DRAMSim2 : public AbstractMemory
     /**
      * Event to schedule clock ticks
      */
-    EventWrapper<DRAMSim2, &DRAMSim2::tick> tickEvent;
+    EventFunctionWrapper tickEvent;
 
-    /** @todo this is a temporary workaround until the 4-phase code is
-     * committed. upstream caches needs this packet until true is returned, so
-     * hold onto it for deletion until a subsequent call
+    /**
+     * Upstream caches need this packet until true is returned, so
+     * hold it for deletion until a subsequent call
      */
-    std::vector<PacketPtr> pendingDelete;
+    std::unique_ptr<Packet> pendingDelete;
 
   public:
 
@@ -195,13 +189,13 @@ class DRAMSim2 : public AbstractMemory
      */
     void writeComplete(unsigned id, uint64_t addr, uint64_t cycle);
 
-    unsigned int drain(DrainManager* dm);
+    DrainState drain() override;
 
     virtual BaseSlavePort& getSlavePort(const std::string& if_name,
-                                        PortID idx = InvalidPortID);
+                                        PortID idx = InvalidPortID) override;
 
-    virtual void init();
-    virtual void startup();
+    void init() override;
+    void startup() override;
 
   protected:
 

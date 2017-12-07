@@ -58,7 +58,8 @@ let {{
     microLdr2UopCode = '''
                         uint64_t data = Mem_ud;
                         Dest = cSwap((uint32_t) data, ((CPSR)Cpsr).e);
-                        Dest2 = cSwap((uint32_t) (data >> 32), ((CPSR)Cpsr).e);
+                        IWDest2 = cSwap((uint32_t) (data >> 32),
+                                        ((CPSR)Cpsr).e);
                         '''
     microLdr2UopIop = InstObjParams('ldr2_uop', 'MicroLdr2Uop',
                                    'MicroMemPairOp',
@@ -124,7 +125,7 @@ let {{
                                           'EA = URb + (up ? imm : -imm);',
                                        'predicate_test': condPredicateTest},
                                       ['IsMicroop','IsNonSpeculative',
-                                       'IsSerializeAfter'])
+                                       'IsSerializeAfter', 'IsSquashAfter'])
 
     microStrUopCode = "Mem = cSwap(URa_uw, ((CPSR)Cpsr).e);"
     microStrUopIop = InstObjParams('str_uop', 'MicroStrUop',
@@ -668,7 +669,7 @@ let {{
                                      {'code': microRetUopCode % 'URb',
                                       'predicate_test': predicateTest},
                                      ['IsMicroop', 'IsNonSpeculative',
-                                      'IsSerializeAfter'])
+                                      'IsSerializeAfter', 'IsSquashAfter'])
 
     setPCCPSRDecl = '''
                     CPSR cpsrOrCondCodes = URc;

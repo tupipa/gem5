@@ -37,20 +37,22 @@
  * Authors: Ali Saidi
  */
 
+#include "dev/arm/rtc_pl031.hh"
+
 #include "base/intmath.hh"
 #include "base/time.hh"
 #include "base/trace.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/Timer.hh"
 #include "dev/arm/amba_device.hh"
-#include "dev/arm/rtc_pl031.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 
 PL031::PL031(Params *p)
     : AmbaIntDevice(p, 0xfff), timeVal(mkutctime(&p->time)),
       lastWrittenTick(0), loadVal(0), matchVal(0),
-      rawInt(false), maskInt(false), pendingInt(false), matchEvent(this)
+      rawInt(false), maskInt(false), pendingInt(false),
+      matchEvent([this]{ counterMatch(); }, name())
 {
 }
 
@@ -192,7 +194,7 @@ PL031::counterMatch()
 }
 
 void
-PL031::serialize(std::ostream &os)
+PL031::serialize(CheckpointOut &cp) const
 {
     DPRINTF(Checkpoint, "Serializing Arm PL031\n");
     SERIALIZE_SCALAR(timeVal);
@@ -214,7 +216,7 @@ PL031::serialize(std::ostream &os)
 }
 
 void
-PL031::unserialize(Checkpoint *cp, const std::string &section)
+PL031::unserialize(CheckpointIn &cp)
 {
     DPRINTF(Checkpoint, "Unserializing Arm PL031\n");
 

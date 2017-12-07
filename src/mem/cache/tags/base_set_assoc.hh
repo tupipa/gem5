@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2014 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -52,10 +52,10 @@
 #include <cstring>
 #include <list>
 
-#include "mem/cache/tags/base.hh"
-#include "mem/cache/tags/cacheset.hh"
 #include "mem/cache/base.hh"
 #include "mem/cache/blk.hh"
+#include "mem/cache/tags/base.hh"
+#include "mem/cache/tags/cacheset.hh"
 #include "mem/packet.hh"
 #include "params/BaseSetAssoc.hh"
 
@@ -78,8 +78,6 @@ class BaseSetAssoc : public BaseTags
   public:
     /** Typedef the block type used in this tag store. */
     typedef CacheBlk BlkType;
-    /** Typedef for a list of pointers to the local block class. */
-    typedef std::list<BlkType*> BlkList;
     /** Typedef the set type used in this tag store. */
     typedef CacheSet<CacheBlk> SetType;
 
@@ -87,6 +85,8 @@ class BaseSetAssoc : public BaseTags
   protected:
     /** The associativity of the cache. */
     const unsigned assoc;
+    /** The allocatable associativity of the cache (alloc mask). */
+    unsigned allocAssoc;
     /** The number of sets in the cache. */
     const unsigned numSets;
     /** Whether tags and data are accessed sequentially. */
@@ -106,8 +106,6 @@ class BaseSetAssoc : public BaseTags
     int tagShift;
     /** Mask out all bits that aren't part of the set index. */
     unsigned setMask;
-    /** Mask out all bits that aren't part of the block offset. */
-    unsigned blkMask;
 
 public:
 
@@ -125,31 +123,18 @@ public:
     virtual ~BaseSetAssoc();
 
     /**
-     * Return the block size.
-     * @return the block size.
+     * Find the cache block given set and way
+     * @param set The set of the block.
+     * @param way The way of the block.
+     * @return The cache block.
      */
-    unsigned
-    getBlockSize() const
-    {
-        return blkSize;
-    }
-
-    /**
-     * Return the subblock size. In the case of BaseSetAssoc it is always
-     * the block size.
-     * @return The block size.
-     */
-    unsigned
-    getSubBlockSize() const
-    {
-        return blkSize;
-    }
+    CacheBlk *findBlockBySetAndWay(int set, int way) const override;
 
     /**
      * Invalidate the given block.
      * @param blk The block to invalidate.
      */
-    void invalidate(CacheBlk *blk)
+    void invalidate(CacheBlk *blk) override
     {
         assert(blk);
         assert(blk->isValid());
@@ -163,42 +148,47 @@ public:
 
     /**
      * Access block and update replacement data. May not succeed, in which case
-     * NULL pointer is returned. This has all the implications of a cache
+     * nullptr is returned. This has all the implications of a cache
      * access and should only be used as such. Returns the access latency as a
      * side effect.
      * @param addr The address to find.
      * @param is_secure True if the target memory space is secure.
-     * @param asid The address space ID.
      * @param lat The access latency.
      * @return Pointer to the cache block if found.
      */
-    CacheBlk* accessBlock(Addr addr, bool is_secure, Cycles &lat,
-                                 int context_src)
+    CacheBlk* accessBlock(Addr addr, bool is_secure, Cycles &lat) override
     {
         Addr tag = extractTag(addr);
         int set = extractSet(addr);
         BlkType *blk = sets[set].findBlk(tag, is_secure);
-        lat = accessLatency;;
 
         // Access all tags in parallel, hence one in each way.  The data side
         // either accesses all blocks in parallel, or one block sequentially on
         // a hit.  Sequential access with a miss doesn't access data.
-        tagAccesses += assoc;
+        tagAccesses += allocAssoc;
         if (sequentialAccess) {
-            if (blk != NULL) {
+            if (blk != nullptr) {
                 dataAccesses += 1;
             }
         } else {
-            dataAccesses += assoc;
+            dataAccesses += allocAssoc;
         }
 
-        if (blk != NULL) {
-            if (blk->whenReady > curTick()
-                && cache->ticksToCycles(blk->whenReady - curTick())
-                > accessLatency) {
-                lat = cache->ticksToCycles(blk->whenReady - curTick());
+        if (blk != nullptr) {
+            // If a cache hit
+            lat = accessLatency;
+            // Check if the block to be accessed is available. If not,
+            // apply the accessLatency on top of block->whenReady.
+            if (blk->whenReady > curTick() &&
+                cache->ticksToCycles(blk->whenReady - curTick()) >
+                accessLatency) {
+                lat = cache->ticksToCycles(blk->whenReady - curTick()) +
+                accessLatency;
             }
             blk->refCount += 1;
+        } else {
+            // If a cache miss
+            lat = lookupLatency;
         }
 
         return blk;
@@ -212,7 +202,7 @@ public:
      * @param asid The address space ID.
      * @return Pointer to the cache block if found.
      */
-    CacheBlk* findBlock(Addr addr, bool is_secure) const;
+    CacheBlk* findBlock(Addr addr, bool is_secure) const override;
 
     /**
      * Find an invalid block to evict for the address provided.
@@ -221,17 +211,16 @@ public:
      * @param addr The addr to a find a replacement candidate for.
      * @return The candidate block.
      */
-    CacheBlk* findVictim(Addr addr)
+    CacheBlk* findVictim(Addr addr) override
     {
-        BlkType *blk = NULL;
+        BlkType *blk = nullptr;
         int set = extractSet(addr);
 
         // prefer to evict an invalid block
-        for (int i = 0; i < assoc; ++i) {
+        for (int i = 0; i < allocAssoc; ++i) {
             blk = sets[set].blks[i];
-            if (!blk->isValid()) {
+            if (!blk->isValid())
                 break;
-            }
         }
 
         return blk;
@@ -242,7 +231,7 @@ public:
      * @param pkt Packet holding the address to update
      * @param blk The block to update.
      */
-     void insertBlock(PacketPtr pkt, CacheBlk *blk)
+     void insertBlock(PacketPtr pkt, CacheBlk *blk) override
      {
          Addr addr = pkt->getAddr();
          MasterID master_id = pkt->req->masterId();
@@ -292,11 +281,30 @@ public:
      }
 
     /**
+     * Limit the allocation for the cache ways.
+     * @param ways The maximum number of ways available for replacement.
+     */
+    virtual void setWayAllocationMax(int ways) override
+    {
+        fatal_if(ways < 1, "Allocation limit must be greater than zero");
+        allocAssoc = ways;
+    }
+
+    /**
+     * Get the way allocation mask limit.
+     * @return The maximum number of ways available for replacement.
+     */
+    virtual int getWayAllocationMax() const override
+    {
+        return allocAssoc;
+    }
+
+    /**
      * Generate the tag from the given address.
      * @param addr The address to get the tag from.
      * @return The tag of the address.
      */
-    Addr extractTag(Addr addr) const
+    Addr extractTag(Addr addr) const override
     {
         return (addr >> tagShift);
     }
@@ -306,19 +314,9 @@ public:
      * @param addr The address to get the set from.
      * @return The set index of the address.
      */
-    int extractSet(Addr addr) const
+    int extractSet(Addr addr) const override
     {
         return ((addr >> setShift) & setMask);
-    }
-
-    /**
-     * Align an address to the block size.
-     * @param addr the address to align.
-     * @return The block address.
-     */
-    Addr blkAlign(Addr addr) const
-    {
-        return (addr & ~(Addr)blkMask);
     }
 
     /**
@@ -327,31 +325,25 @@ public:
      * @param set The set of the block.
      * @return The block address.
      */
-    Addr regenerateBlkAddr(Addr tag, unsigned set) const
+    Addr regenerateBlkAddr(Addr tag, unsigned set) const override
     {
         return ((tag << tagShift) | ((Addr)set << setShift));
     }
 
     /**
-     *iterated through all blocks and clear all locks
-     *Needed to clear all lock tracking at once
-     */
-    virtual void clearLocks();
-
-    /**
      * Called at end of simulation to complete average block reference stats.
      */
-    virtual void cleanupRefs();
+    void cleanupRefs() override;
 
     /**
      * Print all tags used
      */
-    virtual std::string print() const;
+    std::string print() const override;
 
     /**
      * Called prior to dumping stats to compute task occupancy
      */
-    virtual void computeStats();
+    void computeStats() override;
 
     /**
      * Visit each block in the tag store and apply a visitor to the
@@ -365,7 +357,7 @@ public:
      *
      * \param visitor Visitor to call on each block.
      */
-    void forEachBlk(CacheBlkVisitor &visitor) M5_ATTR_OVERRIDE {
+    void forEachBlk(CacheBlkVisitor &visitor) override {
         for (unsigned i = 0; i < numSets * assoc; ++i) {
             if (!visitor(blks[i]))
                 return;

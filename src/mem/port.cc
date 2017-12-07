@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012,2015 ARM Limited
+ * Copyright (c) 2012,2015,2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -46,9 +46,10 @@
  * @file
  * Port object definitions.
  */
+#include "mem/port.hh"
+
 #include "base/trace.hh"
 #include "mem/mem_object.hh"
-#include "mem/port.hh"
 
 Port::Port(const std::string &_name, MemObject& _owner, PortID _id)
     : portName(_name), id(_id), owner(_owner)
@@ -72,7 +73,7 @@ BaseMasterPort::~BaseMasterPort()
 BaseSlavePort&
 BaseMasterPort::getSlavePort() const
 {
-    if(_baseSlavePort == NULL)
+    if (_baseSlavePort == NULL)
         panic("Cannot getSlavePort on master port %s that is not connected\n",
               name());
 
@@ -98,7 +99,7 @@ BaseSlavePort::~BaseSlavePort()
 BaseMasterPort&
 BaseSlavePort::getMasterPort() const
 {
-    if(_baseMasterPort == NULL)
+    if (_baseMasterPort == NULL)
         panic("Cannot getMasterPort on slave port %s that is not connected\n",
               name());
 
@@ -180,6 +181,13 @@ MasterPort::sendTimingReq(PacketPtr pkt)
 {
     assert(pkt->isRequest());
     return _slavePort->recvTimingReq(pkt);
+}
+
+bool
+MasterPort::tryTiming(PacketPtr pkt) const
+{
+  assert(pkt->isRequest());
+  return _slavePort->tryTiming(pkt);
 }
 
 bool

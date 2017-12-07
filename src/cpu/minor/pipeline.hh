@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 ARM Limited
+ * Copyright (c) 2013-2014, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -112,10 +112,10 @@ class Pipeline : public Ticked
   public:
     /** Wake up the Fetch unit.  This is needed on thread activation esp.
      *  after quiesce wakeup */
-    void wakeupFetch();
+    void wakeupFetch(ThreadID tid);
 
     /** Try to drain the CPU */
-    unsigned int drain(DrainManager *manager);
+    bool drain();
 
     void drainResume();
 
@@ -124,14 +124,12 @@ class Pipeline : public Ticked
 
     /** A custom evaluate allows report in the right place (between
      *  stages and pipeline advance) */
-    void evaluate();
-
-    void countCycles(Cycles delta) M5_ATTR_OVERRIDE
-    {
-        cpu.ppCycles->notify(delta);
-    }
+    void evaluate() override;
 
     void minorTrace() const;
+
+    /** Stats registering */
+    void regStats();
 
     /** Functions below here are BaseCPU operations passed on to pipeline
      *  stages */

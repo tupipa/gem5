@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2013,2015 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -44,6 +44,7 @@
 #define __CPU_SIMPLE_TIMING_HH__
 
 #include "cpu/simple/base.hh"
+#include "cpu/simple/exec_context.hh"
 #include "cpu/translation.hh"
 #include "params/TimingSimpleCPU.hh"
 
@@ -54,7 +55,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
     TimingSimpleCPU(TimingSimpleCPUParams * params);
     virtual ~TimingSimpleCPU();
 
-    virtual void init();
+    void init() override;
 
   private:
 
@@ -131,6 +132,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
     };
     FetchTranslation fetchTranslation;
 
+    void threadSnoop(PacketPtr pkt, ThreadID sender);
     void sendData(RequestPtr req, uint8_t *data, uint64_t *res, bool read);
     void sendSplitData(RequestPtr req1, RequestPtr req2, RequestPtr req,
                        uint8_t *data, bool read);
@@ -157,15 +159,11 @@ class TimingSimpleCPU : public BaseSimpleCPU
       public:
 
         TimingCPUPort(const std::string& _name, TimingSimpleCPU* _cpu)
-            : MasterPort(_name, _cpu), cpu(_cpu), retryRespEvent(this)
+            : MasterPort(_name, _cpu), cpu(_cpu),
+              retryRespEvent([this]{ sendRetryResp(); }, name())
         { }
 
       protected:
-
-        /**
-         * Snooping a coherence request, do nothing.
-         */
-        virtual void recvTimingSnoopReq(PacketPtr pkt) {}
 
         TimingSimpleCPU* cpu;
 
@@ -179,7 +177,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
             void schedule(PacketPtr _pkt, Tick t);
         };
 
-        EventWrapper<MasterPort, &MasterPort::sendRetryResp> retryRespEvent;
+        EventFunctionWrapper retryRespEvent;
     };
 
     class IcachePort : public TimingCPUPort
@@ -263,28 +261,32 @@ class TimingSimpleCPU : public BaseSimpleCPU
   protected:
 
      /** Return a reference to the data port. */
-    virtual MasterPort &getDataPort() { return dcachePort; }
+    MasterPort &getDataPort() override { return dcachePort; }
 
     /** Return a reference to the instruction port. */
-    virtual MasterPort &getInstPort() { return icachePort; }
+    MasterPort &getInstPort() override { return icachePort; }
 
   public:
 
-    unsigned int drain(DrainManager *drain_manager);
-    void drainResume();
+    DrainState drain() override;
+    void drainResume() override;
 
-    void switchOut();
-    void takeOverFrom(BaseCPU *oldCPU);
+    void switchOut() override;
+    void takeOverFrom(BaseCPU *oldCPU) override;
 
-    void verifyMemoryMode() const;
+    void verifyMemoryMode() const override;
 
-    virtual void activateContext(ThreadID thread_num);
-    virtual void suspendContext(ThreadID thread_num);
+    void activateContext(ThreadID thread_num) override;
+    void suspendContext(ThreadID thread_num) override;
 
-    Fault readMem(Addr addr, uint8_t *data, unsigned size, unsigned flags);
+    Fault readMem(Addr addr, uint8_t *data, unsigned size,
+                  Request::Flags flags) override;
+
+    Fault initiateMemRead(Addr addr, unsigned size,
+                          Request::Flags flags) override;
 
     Fault writeMem(uint8_t *data, unsigned size,
-                   Addr addr, unsigned flags, uint64_t *res);
+                   Addr addr, Request::Flags flags, uint64_t *res) override;
 
     void fetch();
     void sendFetch(const Fault &fault, RequestPtr req, ThreadContext *tc);
@@ -314,8 +316,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
 
   private:
 
-    typedef EventWrapper<TimingSimpleCPU, &TimingSimpleCPU::fetch> FetchEvent;
-    FetchEvent fetchEvent;
+    EventFunctionWrapper fetchEvent;
 
     struct IprEvent : Event {
         Packet *pkt;
@@ -342,7 +343,11 @@ class TimingSimpleCPU : public BaseSimpleCPU
      * </ul>
      */
     bool isDrained() {
-        return microPC() == 0 && !stayAtPC && !fetchEvent.scheduled();
+        SimpleExecContext& t_info = *threadInfo[curThread];
+        SimpleThread* thread = t_info.thread;
+
+        return thread->microPC() == 0 && !t_info.stayAtPC &&
+               !fetchEvent.scheduled();
     }
 
     /**
@@ -351,13 +356,6 @@ class TimingSimpleCPU : public BaseSimpleCPU
      * @returns true if the CPU is drained, false otherwise.
      */
     bool tryCompleteDrain();
-
-    /**
-     * Drain manager to use when signaling drain completion
-     *
-     * This pointer is non-NULL when draining and NULL otherwise.
-     */
-    DrainManager *drainManager;
 };
 
 #endif // __CPU_SIMPLE_TIMING_HH__

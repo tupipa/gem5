@@ -1,4 +1,4 @@
-# Copyright (c) 2013 ARM Limited
+# Copyright (c) 2013, 2017 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -39,6 +39,7 @@
 import m5.objects
 import inspect
 import sys
+import HMC
 from textwrap import  TextWrapper
 
 # Dictionary of mapping names of real memory controller models to
@@ -151,23 +152,56 @@ def config_mem(options, system):
     them.
     """
 
-    if options.external_memory_system:
+    # Mandatory options
+    opt_mem_type = options.mem_type
+    opt_mem_channels = options.mem_channels
+
+    # Optional options
+    opt_tlm_memory = getattr(options, "tlm_memory", None)
+    opt_external_memory_system = getattr(options, "external_memory_system",
+                                         None)
+    opt_elastic_trace_en = getattr(options, "elastic_trace_en", False)
+    opt_mem_ranks = getattr(options, "mem_ranks", None)
+
+    if opt_mem_type == "HMC_2500_1x32":
+        HMChost = HMC.config_hmc_host_ctrl(options, system)
+        HMC.config_hmc_dev(options, system, HMChost.hmc_host)
+        subsystem = system.hmc_dev
+        xbar = system.hmc_dev.xbar
+    else:
+        subsystem = system
+        xbar = system.membus
+
+    if opt_tlm_memory:
         system.external_memory = m5.objects.ExternalSlave(
-            port_type=options.external_memory_system,
-            port_data="init_mem0", port=system.membus.master,
+            port_type="tlm_slave",
+            port_data=opt_tlm_memory,
+            port=system.membus.master,
             addr_ranges=system.mem_ranges)
         system.kernel_addr_check = False
         return
 
-    nbr_mem_ctrls = options.mem_channels
+    if opt_external_memory_system:
+        subsystem.external_memory = m5.objects.ExternalSlave(
+            port_type=opt_external_memory_system,
+            port_data="init_mem0", port=xbar.master,
+            addr_ranges=system.mem_ranges)
+        subsystem.kernel_addr_check = False
+        return
+
+    nbr_mem_ctrls = opt_mem_channels
     import math
     from m5.util import fatal
     intlv_bits = int(math.log(nbr_mem_ctrls, 2))
     if 2 ** intlv_bits != nbr_mem_ctrls:
         fatal("Number of memory channels must be a power of 2")
 
-    cls = get(options.mem_type)
+    cls = get(opt_mem_type)
     mem_ctrls = []
+
+    if opt_elastic_trace_en and not issubclass(cls, m5.objects.SimpleMemory):
+        fatal("When elastic trace is enabled, configure mem-type as "
+                "simple-mem.")
 
     # The default behaviour is to interleave memory channels on 128
     # byte granularity, or cache line granularity if larger than 128
@@ -184,14 +218,24 @@ def config_mem(options, system):
                                        intlv_size)
             # Set the number of ranks based on the command-line
             # options if it was explicitly set
-            if issubclass(cls, m5.objects.DRAMCtrl) and \
-                    options.mem_ranks:
-                mem_ctrl.ranks_per_channel = options.mem_ranks
+            if issubclass(cls, m5.objects.DRAMCtrl) and opt_mem_ranks:
+                mem_ctrl.ranks_per_channel = opt_mem_ranks
+
+            if opt_elastic_trace_en:
+                mem_ctrl.latency = '1ns'
+                print "For elastic trace, over-riding Simple Memory " \
+                    "latency to 1ns."
 
             mem_ctrls.append(mem_ctrl)
 
-    system.mem_ctrls = mem_ctrls
+    subsystem.mem_ctrls = mem_ctrls
 
     # Connect the controllers to the membus
-    for i in xrange(len(system.mem_ctrls)):
-        system.mem_ctrls[i].port = system.membus.master
+    for i in xrange(len(subsystem.mem_ctrls)):
+        if opt_mem_type == "HMC_2500_1x32":
+            subsystem.mem_ctrls[i].port = xbar[i/4].master
+            # Set memory device size. There is an independent controller for
+            # each vault. All vaults are same size.
+            subsystem.mem_ctrls[i].device_size = options.hmc_dev_vault_size
+        else:
+            subsystem.mem_ctrls[i].port = xbar.master

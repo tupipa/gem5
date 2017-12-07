@@ -35,7 +35,7 @@
 
 #include "arch/mips/faults.hh"
 #include "base/compiler.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "params/MipsInterrupts.hh"
 #include "sim/serialize.hh"
 #include "sim/sim_object.hh"
@@ -107,22 +107,16 @@ class Interrupts : public SimObject
     void updateIntrInfo(ThreadContext *tc) const;
     bool interruptsPending(ThreadContext *tc) const;
     bool onCpuTimerInterrupt(ThreadContext *tc) const;
-
-    bool
-    checkInterrupts(ThreadContext *tc) const
-    {
-        return interruptsPending(tc);
-    }
-
+    bool checkInterrupts(ThreadContext *tc) const;
 
     void
-    serialize(std::ostream &os)
+    serialize(CheckpointOut &cp) const override
     {
         fatal("Serialization of Interrupts Unimplemented for MIPS");
     }
 
     void
-    unserialize(Checkpoint *cp, const std::string &section)
+    unserialize(CheckpointIn &cp) override
     {
         fatal("Unserialization of Interrupts Unimplemented for MIPS");
     }

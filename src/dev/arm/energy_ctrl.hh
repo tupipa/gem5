@@ -124,19 +124,19 @@ class EnergyCtrl : public BasicPioDevice
      * @param pkt Packet describing this request
      * @return number of ticks it took to complete
      */
-    virtual Tick read(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
     /**
      * Write command sent to the device
      * @param pkt Packet describing this request
      * @return number of ticks it took to complete
      */
-    virtual Tick write(PacketPtr pkt);
+    Tick write(PacketPtr pkt) override;
 
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
-    void startup();
-    void init();
+    void startup() override;
+    void init() override;
 
   private:
     DVFSHandler *dvfsHandler;
@@ -182,6 +182,6 @@ class EnergyCtrl : public BasicPioDevice
         perfLevelAck = 1;
     }
 
-    EventWrapper<EnergyCtrl, &EnergyCtrl::updatePLAck> updateAckEvent;
+    EventFunctionWrapper updateAckEvent;
 };
 #endif //__DEV_ARM_ENERGY_CTRL_HH__

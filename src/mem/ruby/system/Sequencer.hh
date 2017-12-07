@@ -30,8 +30,8 @@
 #define __MEM_RUBY_SYSTEM_SEQUENCER_HH__
 
 #include <iostream>
+#include <unordered_map>
 
-#include "base/hashmap.hh"
 #include "mem/protocol/MachineType.hh"
 #include "mem/protocol/RubyRequestType.hh"
 #include "mem/protocol/SequencerRequestType.hh"
@@ -63,12 +63,11 @@ class Sequencer : public RubyPort
 
     // Public Methods
     void wakeup(); // Used only for deadlock detection
-    void printProgress(std::ostream& out) const;
     void resetStats();
     void collateStats();
     void regStats();
 
-    void writeCallback(const Address& address,
+    void writeCallback(Addr address,
                        DataBlock& data,
                        const bool externalHit = false,
                        const MachineType mach = MachineType_NUM,
@@ -76,7 +75,7 @@ class Sequencer : public RubyPort
                        const Cycles forwardRequestTime = Cycles(0),
                        const Cycles firstResponseTime = Cycles(0));
 
-    void readCallback(const Address& address,
+    void readCallback(Addr address,
                       DataBlock& data,
                       const bool externalHit = false,
                       const MachineType mach = MachineType_NUM,
@@ -95,12 +94,12 @@ class Sequencer : public RubyPort
     { deschedule(deadlockCheckEvent); }
 
     void print(std::ostream& out) const;
-    void checkCoherence(const Address& address);
+    void checkCoherence(Addr address);
 
     void markRemoved();
-    void removeRequest(SequencerRequest* request);
-    void evictionCallback(const Address& address);
-    void invalidateSC(const Address& address);
+    void evictionCallback(Addr address);
+    void invalidateSC(Addr address);
+    int coreId() const { return m_coreId; }
 
     void recordRequestType(SequencerRequestType requestType);
     Stats::Histogram& getOutstandReqHist() { return m_outstandReqHist; }
@@ -167,7 +166,7 @@ class Sequencer : public RubyPort
                            Cycles completionTime);
 
     RequestStatus insertRequest(PacketPtr pkt, RubyRequestType request_type);
-    bool handleLlsc(const Address& address, SequencerRequest* request);
+    bool handleLlsc(Addr address, SequencerRequest* request);
 
     // Private copy constructor and assignment operator
     Sequencer(const Sequencer& obj);
@@ -180,7 +179,14 @@ class Sequencer : public RubyPort
     CacheMemory* m_dataCache_ptr;
     CacheMemory* m_instCache_ptr;
 
-    typedef m5::hash_map<Address, SequencerRequest*> RequestTable;
+    // The cache access latency for top-level caches (L0/L1). These are
+    // currently assessed at the beginning of each memory access through the
+    // sequencer.
+    // TODO: Migrate these latencies into top-level cache controllers.
+    Cycles m_data_cache_hit_latency;
+    Cycles m_inst_cache_hit_latency;
+
+    typedef std::unordered_map<Addr, SequencerRequest*> RequestTable;
     RequestTable m_writeRequestTable;
     RequestTable m_readRequestTable;
     // Global outstanding request count, across all request tables
@@ -193,7 +199,9 @@ class Sequencer : public RubyPort
     Stats::Scalar m_load_waiting_on_store;
     Stats::Scalar m_load_waiting_on_load;
 
-    bool m_usingNetworkTester;
+    int m_coreId;
+
+    bool m_runningGarnetStandalone;
 
     //! Histogram for number of outstanding requests per cycle.
     Stats::Histogram m_outstandReqHist;
@@ -229,19 +237,7 @@ class Sequencer : public RubyPort
     std::vector<Stats::Histogram *> m_FirstResponseToCompletionDelayHist;
     std::vector<Stats::Counter> m_IncompleteTimes;
 
-
-    class SequencerWakeupEvent : public Event
-    {
-      private:
-        Sequencer *m_sequencer_ptr;
-
-      public:
-        SequencerWakeupEvent(Sequencer *_seq) : m_sequencer_ptr(_seq) {}
-        void process() { m_sequencer_ptr->wakeup(); }
-        const char *description() const { return "Sequencer deadlock check"; }
-    };
-
-    SequencerWakeupEvent deadlockCheckEvent;
+    EventFunctionWrapper deadlockCheckEvent;
 };
 
 inline std::ostream&

@@ -28,10 +28,11 @@
  * Authors: Gabe Black
  */
 
+#include "arch/alpha/isa.hh"
+
 #include <cassert>
 
-#include "arch/alpha/isa.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "cpu/thread_context.hh"
 #include "params/AlphaISA.hh"
 #include "sim/serialize.hh"
@@ -53,7 +54,7 @@ ISA::params() const
 }
 
 void
-ISA::serialize(std::ostream &os)
+ISA::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(fpcr);
     SERIALIZE_SCALAR(uniq);
@@ -63,7 +64,7 @@ ISA::serialize(std::ostream &os)
 }
 
 void
-ISA::unserialize(Checkpoint *cp, const std::string &section)
+ISA::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(fpcr);
     UNSERIALIZE_SCALAR(uniq);

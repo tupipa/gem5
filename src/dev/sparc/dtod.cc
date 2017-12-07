@@ -31,6 +31,8 @@
 /** @file
  * Time of date device implementation
  */
+#include "dev/sparc/dtod.hh"
+
 #include <sys/time.h>
 
 #include <deque>
@@ -40,7 +42,6 @@
 #include "base/time.hh"
 #include "base/trace.hh"
 #include "config/the_isa.hh"
-#include "dev/sparc/dtod.hh"
 #include "dev/platform.hh"
 #include "mem/packet_access.hh"
 #include "mem/port.hh"
@@ -79,13 +80,13 @@ DumbTOD::write(PacketPtr pkt)
 }
 
 void
-DumbTOD::serialize(std::ostream &os)
+DumbTOD::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(todTime);
 }
 
 void
-DumbTOD::unserialize(Checkpoint *cp, const std::string &section)
+DumbTOD::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(todTime);
 }

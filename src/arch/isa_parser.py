@@ -1,4 +1,4 @@
-# Copyright (c) 2014 ARM Limited
+# Copyright (c) 2014, 2016 ARM Limited
 # All rights reserved
 #
 # The license below extends only to copyright in the software and shall
@@ -11,7 +11,7 @@
 # modified or unmodified, in source code or in binary form.
 #
 # Copyright (c) 2003-2005 The Regents of The University of Michigan
-# Copyright (c) 2013 Advanced Micro Devices, Inc.
+# Copyright (c) 2013,2015 Advanced Micro Devices, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -88,42 +88,17 @@ def fixPythonIndentation(s):
     return s
 
 class ISAParserError(Exception):
-    """Error handler for parser errors"""
+    """Exception class for parser errors"""
     def __init__(self, first, second=None):
         if second is None:
             self.lineno = 0
             self.string = first
         else:
-            if hasattr(first, 'lexer'):
-                first = first.lexer.lineno
             self.lineno = first
             self.string = second
 
-    def display(self, filename_stack, print_traceback=debug):
-        # Output formatted to work under Emacs compile-mode.  Optional
-        # 'print_traceback' arg, if set to True, prints a Python stack
-        # backtrace too (can be handy when trying to debug the parser
-        # itself).
-
-        spaces = ""
-        for (filename, line) in filename_stack[:-1]:
-            print "%sIn file included from %s:" % (spaces, filename)
-            spaces += "  "
-
-        # Print a Python stack backtrace if requested.
-        if print_traceback or not self.lineno:
-            traceback.print_exc()
-
-        line_str = "%s:" % (filename_stack[-1][0], )
-        if self.lineno:
-            line_str += "%d:" % (self.lineno, )
-
-        return "%s%s %s" % (spaces, line_str, self.string)
-
-    def exit(self, filename_stack, print_traceback=debug):
-        # Just call exit.
-
-        sys.exit(self.display(filename_stack, print_traceback))
+    def __str__(self):
+        return self.string
 
 def error(*args):
     raise ISAParserError(*args)
@@ -147,8 +122,6 @@ class Template(object):
         # Protect non-Python-dict substitutions (e.g. if there's a printf
         # in the templated C++ code)
         template = self.parser.protectNonSubstPercents(self.template)
-        # CPU-model-specific substitutions are handled later (in GenCode).
-        template = self.parser.protectCpuSymbols(template)
 
         # Build a dict ('myDict') to use for the template substitution.
         # Start with the template namespace.  Make a copy since we're
@@ -243,11 +216,9 @@ class Template(object):
             raise TypeError, "Template.subst() arg must be or have dictionary"
         return template % myDict
 
-    # Convert to string.  This handles the case when a template with a
-    # CPU-specific term gets interpolated into another template or into
-    # an output block.
+    # Convert to string.
     def __str__(self):
-        return self.parser.expandCpuSymbolsToString(self.template)
+        return self.template
 
 ################
 # Format object.
@@ -309,23 +280,18 @@ class NoFormat(object):
 # strings containing code destined for decoder.hh and decoder.cc
 # respectively.  The decode_block attribute contains code to be
 # incorporated in the decode function itself (that will also end up in
-# decoder.cc).  The exec_output attribute is a dictionary with a key
-# for each CPU model name; the value associated with a particular key
-# is the string of code for that CPU model's exec.cc file.  The
-# has_decode_default attribute is used in the decode block to allow
-# explicit default clauses to override default default clauses.
+# decoder.cc).  The exec_output attribute  is the string of code for the
+# exec.cc file.  The has_decode_default attribute is used in the decode block
+# to allow explicit default clauses to override default default clauses.
 
 class GenCode(object):
-    # Constructor.  At this point we substitute out all CPU-specific
-    # symbols.  For the exec output, these go into the per-model
-    # dictionary.  For all other output types they get collapsed into
-    # a single string.
+    # Constructor.
     def __init__(self, parser,
                  header_output = '', decoder_output = '', exec_output = '',
                  decode_block = '', has_decode_default = False):
         self.parser = parser
-        self.header_output = parser.expandCpuSymbolsToString(header_output)
-        self.decoder_output = parser.expandCpuSymbolsToString(decoder_output)
+        self.header_output = header_output
+        self.decoder_output = decoder_output
         self.exec_output = exec_output
         self.decode_block = decode_block
         self.has_decode_default = has_decode_default
@@ -518,6 +484,12 @@ class Operand(object):
     def isControlReg(self):
         return 0
 
+    def isVecReg(self):
+        return 0
+
+    def isVecElem(self):
+        return 0
+
     def isPCState(self):
         return 0
 
@@ -545,7 +517,14 @@ class Operand(object):
         # to avoid 'uninitialized variable' errors from the compiler.
         return self.ctype + ' ' + self.base_name + ' = 0;\n';
 
+
+src_reg_constructor = '\n\t_srcRegIdx[_numSrcRegs++] = RegId(%s, %s);'
+dst_reg_constructor = '\n\t_destRegIdx[_numDestRegs++] = RegId(%s, %s);'
+
+
 class IntRegOperand(Operand):
+    reg_class = 'IntRegClass'
+
     def isReg(self):
         return 1
 
@@ -557,14 +536,13 @@ class IntRegOperand(Operand):
         c_dest = ''
 
         if self.is_src:
-            c_src = '\n\t_srcRegIdx[_numSrcRegs++] = %s;' % (self.reg_spec)
+            c_src = src_reg_constructor % (self.reg_class, self.reg_spec)
             if self.hasReadPred():
                 c_src = '\n\tif (%s) {%s\n\t}' % \
                         (self.read_predicate, c_src)
 
         if self.is_dest:
-            c_dest = '\n\t_destRegIdx[_numDestRegs++] = %s;' % \
-                    (self.reg_spec)
+            c_dest = dst_reg_constructor % (self.reg_class, self.reg_spec)
             c_dest += '\n\t_numIntDestRegs++;'
             if self.hasWritePred():
                 c_dest = '\n\tif (%s) {%s\n\t}' % \
@@ -617,6 +595,8 @@ class IntRegOperand(Operand):
         return wb
 
 class FloatRegOperand(Operand):
+    reg_class = 'FloatRegClass'
+
     def isReg(self):
         return 1
 
@@ -628,13 +608,10 @@ class FloatRegOperand(Operand):
         c_dest = ''
 
         if self.is_src:
-            c_src = '\n\t_srcRegIdx[_numSrcRegs++] = %s + FP_Reg_Base;' % \
-                    (self.reg_spec)
+            c_src = src_reg_constructor % (self.reg_class, self.reg_spec)
 
         if self.is_dest:
-            c_dest = \
-              '\n\t_destRegIdx[_numDestRegs++] = %s + FP_Reg_Base;' % \
-              (self.reg_spec)
+            c_dest = dst_reg_constructor % (self.reg_class, self.reg_spec)
             c_dest += '\n\t_numFPDestRegs++;'
 
         return c_src + c_dest
@@ -678,7 +655,203 @@ class FloatRegOperand(Operand):
         }''' % (self.ctype, self.base_name, wp)
         return wb
 
+class VecRegOperand(Operand):
+    reg_class = 'VecRegClass'
+
+    def __init__(self, parser, full_name, ext, is_src, is_dest):
+        Operand.__init__(self, parser, full_name, ext, is_src, is_dest)
+        self.elemExt = None
+        self.parser = parser
+
+    def isReg(self):
+        return 1
+
+    def isVecReg(self):
+        return 1
+
+    def makeDeclElem(self, elem_op):
+        (elem_name, elem_ext) = elem_op
+        (elem_spec, dflt_elem_ext, zeroing) = self.elems[elem_name]
+        if elem_ext:
+            ext = elem_ext
+        else:
+            ext = dflt_elem_ext
+        ctype = self.parser.operandTypeMap[ext]
+        return '\n\t%s %s = 0;' % (ctype, elem_name)
+
+    def makeDecl(self):
+        if not self.is_dest and self.is_src:
+            c_decl = '\t/* Vars for %s*/' % (self.base_name)
+            if hasattr(self, 'active_elems'):
+                if self.active_elems:
+                    for elem in self.active_elems:
+                        c_decl += self.makeDeclElem(elem)
+            return c_decl + '\t/* End vars for %s */\n' % (self.base_name)
+        else:
+            return ''
+
+    def makeConstructor(self, predRead, predWrite):
+        c_src = ''
+        c_dest = ''
+
+        numAccessNeeded = 1
+
+        if self.is_src:
+            c_src = src_reg_constructor % (self.reg_class, self.reg_spec)
+
+        if self.is_dest:
+            c_dest = dst_reg_constructor % (self.reg_class, self.reg_spec)
+            c_dest += '\n\t_numVecDestRegs++;'
+
+        return c_src + c_dest
+
+    # Read destination register to write
+    def makeReadWElem(self, elem_op):
+        (elem_name, elem_ext) = elem_op
+        (elem_spec, dflt_elem_ext, zeroing) = self.elems[elem_name]
+        if elem_ext:
+            ext = elem_ext
+        else:
+            ext = dflt_elem_ext
+        ctype = self.parser.operandTypeMap[ext]
+        c_read = '\t\t%s& %s = %s[%s];\n' % \
+                  (ctype, elem_name, self.base_name, elem_spec)
+        return c_read
+
+    def makeReadW(self, predWrite):
+        func = 'getWritableVecRegOperand'
+        if self.read_code != None:
+            return self.buildReadCode(func)
+
+        if predWrite:
+            rindex = '_destIndex++'
+        else:
+            rindex = '%d' % self.dest_reg_idx
+
+        c_readw = '\t\t%s& tmp_d%s = xc->%s(this, %s);\n'\
+                % ('TheISA::VecRegContainer', rindex, func, rindex)
+        if self.elemExt:
+            c_readw += '\t\tauto %s = tmp_d%s.as<%s>();\n' % (self.base_name,
+                        rindex, self.parser.operandTypeMap[self.elemExt])
+        if self.ext:
+            c_readw += '\t\tauto %s = tmp_d%s.as<%s>();\n' % (self.base_name,
+                        rindex, self.parser.operandTypeMap[self.ext])
+        if hasattr(self, 'active_elems'):
+            if self.active_elems:
+                for elem in self.active_elems:
+                    c_readw += self.makeReadWElem(elem)
+        return c_readw
+
+    # Normal source operand read
+    def makeReadElem(self, elem_op, name):
+        (elem_name, elem_ext) = elem_op
+        (elem_spec, dflt_elem_ext, zeroing) = self.elems[elem_name]
+
+        if elem_ext:
+            ext = elem_ext
+        else:
+            ext = dflt_elem_ext
+        ctype = self.parser.operandTypeMap[ext]
+        c_read = '\t\t%s = %s[%s];\n' % \
+                  (elem_name, name, elem_spec)
+        return c_read
+
+    def makeRead(self, predRead):
+        func = 'readVecRegOperand'
+        if self.read_code != None:
+            return self.buildReadCode(func)
+
+        if predRead:
+            rindex = '_sourceIndex++'
+        else:
+            rindex = '%d' % self.src_reg_idx
+
+        name = self.base_name
+        if self.is_dest and self.is_src:
+            name += '_merger'
+
+        c_read =  '\t\t%s& tmp_s%s = xc->%s(this, %s);\n' \
+                % ('const TheISA::VecRegContainer', rindex, func, rindex)
+        # If the parser has detected that elements are being access, create
+        # the appropriate view
+        if self.elemExt:
+            c_read += '\t\tauto %s = tmp_s%s.as<%s>();\n' % \
+                 (name, rindex, self.parser.operandTypeMap[self.elemExt])
+        if self.ext:
+            c_read += '\t\tauto %s = tmp_s%s.as<%s>();\n' % \
+                 (name, rindex, self.parser.operandTypeMap[self.ext])
+        if hasattr(self, 'active_elems'):
+            if self.active_elems:
+                for elem in self.active_elems:
+                    c_read += self.makeReadElem(elem, name)
+        return c_read
+
+    def makeWrite(self, predWrite):
+        func = 'setVecRegOperand'
+        if self.write_code != None:
+            return self.buildWriteCode(func)
+
+        wb = '''
+        if (traceData) {
+            warn_once("Vectors not supported yet in tracedata");
+            /*traceData->setData(final_val);*/
+        }
+        '''
+        return wb
+
+    def finalize(self, predRead, predWrite):
+        super(VecRegOperand, self).finalize(predRead, predWrite)
+        if self.is_dest:
+            self.op_rd = self.makeReadW(predWrite) + self.op_rd
+
+class VecElemOperand(Operand):
+    reg_class = 'VectorElemClass'
+
+    def isReg(self):
+        return 1
+
+    def isVecElem(self):
+        return 1
+
+    def makeDecl(self):
+        if self.is_dest and not self.is_src:
+            return '\n\t%s %s;' % (self.ctype, self.base_name)
+        else:
+            return ''
+
+    def makeConstructor(self, predRead, predWrite):
+        c_src = ''
+        c_dest = ''
+
+        numAccessNeeded = 1
+        regId = 'RegId(%s, %s * numVecElemPerVecReg + elemIdx, %s)' % \
+                (self.reg_class, self.reg_spec)
+
+        if self.is_src:
+            c_src = ('\n\t_srcRegIdx[_numSrcRegs++] = RegId(%s, %s, %s);' %
+                    (self.reg_class, self.reg_spec, self.elem_spec))
+
+        if self.is_dest:
+            c_dest = ('\n\t_destRegIdx[_numDestRegs++] = RegId(%s, %s, %s);' %
+                    (self.reg_class, self.reg_spec, self.elem_spec))
+            c_dest += '\n\t_numVecElemDestRegs++;'
+        return c_src + c_dest
+
+    def makeRead(self, predRead):
+        c_read = ('\n/* Elem is kept inside the operand description */' +
+                  '\n\tVecElem %s = xc->readVecElemOperand(this, %d);' %
+                  (self.base_name, self.src_reg_idx))
+        return c_read
+
+    def makeWrite(self, predWrite):
+        c_write = ('\n/* Elem is kept inside the operand description */' +
+                   '\n\txc->setVecElemOperand(this, %d, %s);' %
+                   (self.dest_reg_idx, self.base_name))
+        return c_write
+
 class CCRegOperand(Operand):
+    reg_class = 'CCRegClass'
+
     def isReg(self):
         return 1
 
@@ -690,16 +863,13 @@ class CCRegOperand(Operand):
         c_dest = ''
 
         if self.is_src:
-            c_src = '\n\t_srcRegIdx[_numSrcRegs++] = %s + CC_Reg_Base;' % \
-                     (self.reg_spec)
+            c_src = src_reg_constructor % (self.reg_class, self.reg_spec)
             if self.hasReadPred():
                 c_src = '\n\tif (%s) {%s\n\t}' % \
                         (self.read_predicate, c_src)
 
         if self.is_dest:
-            c_dest = \
-              '\n\t_destRegIdx[_numDestRegs++] = %s + CC_Reg_Base;' % \
-              (self.reg_spec)
+            c_dest = dst_reg_constructor % (self.reg_class, self.reg_spec)
             c_dest += '\n\t_numCCDestRegs++;'
             if self.hasWritePred():
                 c_dest = '\n\tif (%s) {%s\n\t}' % \
@@ -752,6 +922,8 @@ class CCRegOperand(Operand):
         return wb
 
 class ControlRegOperand(Operand):
+    reg_class = 'MiscRegClass'
+
     def isReg(self):
         return 1
 
@@ -763,14 +935,10 @@ class ControlRegOperand(Operand):
         c_dest = ''
 
         if self.is_src:
-            c_src = \
-              '\n\t_srcRegIdx[_numSrcRegs++] = %s + Misc_Reg_Base;' % \
-              (self.reg_spec)
+            c_src = src_reg_constructor % (self.reg_class, self.reg_spec)
 
         if self.is_dest:
-            c_dest = \
-              '\n\t_destRegIdx[_numDestRegs++] = %s + Misc_Reg_Base;' % \
-              (self.reg_spec)
+            c_dest = dst_reg_constructor % (self.reg_class, self.reg_spec)
 
         return c_src + c_dest
 
@@ -815,10 +983,8 @@ class MemOperand(Operand):
         return ''
 
     def makeDecl(self):
-        # Note that initializations in the declarations are solely
-        # to avoid 'uninitialized variable' errors from the compiler.
         # Declare memory data variable.
-        return '%s %s = 0;\n' % (self.ctype, self.base_name)
+        return '%s %s;\n' % (self.ctype, self.base_name)
 
     def makeRead(self, predRead):
         if self.read_code != None:
@@ -882,22 +1048,49 @@ class OperandList(object):
             op = match.groups()
             # regexp groups are operand full name, base, and extension
             (op_full, op_base, op_ext) = op
+            # If is a elem operand, define or update the corresponding
+            # vector operand
+            isElem = False
+            if op_base in parser.elemToVector:
+                isElem = True
+                elem_op = (op_base, op_ext)
+                op_base = parser.elemToVector[op_base]
+                op_ext = '' # use the default one
             # if the token following the operand is an assignment, this is
             # a destination (LHS), else it's a source (RHS)
             is_dest = (assignRE.match(code, match.end()) != None)
             is_src = not is_dest
+
             # see if we've already seen this one
             op_desc = self.find_base(op_base)
             if op_desc:
-                if op_desc.ext != op_ext:
-                    error('Inconsistent extensions for operand %s' % \
-                          op_base)
+                if op_ext and op_ext != '' and op_desc.ext != op_ext:
+                    error ('Inconsistent extensions for operand %s: %s - %s' \
+                            % (op_base, op_desc.ext, op_ext))
                 op_desc.is_src = op_desc.is_src or is_src
                 op_desc.is_dest = op_desc.is_dest or is_dest
+                if isElem:
+                    (elem_base, elem_ext) = elem_op
+                    found = False
+                    for ae in op_desc.active_elems:
+                        (ae_base, ae_ext) = ae
+                        if ae_base == elem_base:
+                            if ae_ext != elem_ext:
+                                error('Inconsistent extensions for elem'
+                                      ' operand %s' % elem_base)
+                            else:
+                                found = True
+                    if not found:
+                        op_desc.active_elems.append(elem_op)
             else:
                 # new operand: create new descriptor
                 op_desc = parser.operandNameMap[op_base](parser,
                     op_full, op_ext, is_src, is_dest)
+                # if operand is a vector elem, add the corresponding vector
+                # operand if not already done
+                if isElem:
+                    op_desc.elemExt = elem_op[1]
+                    op_desc.active_elems = [elem_op]
                 self.append(op_desc)
             # start next search after end of current match
             next_pos = match.end()
@@ -908,6 +1101,7 @@ class OperandList(object):
         self.numDestRegs = 0
         self.numFPDestRegs = 0
         self.numIntDestRegs = 0
+        self.numVecDestRegs = 0
         self.numCCDestRegs = 0
         self.numMiscDestRegs = 0
         self.memOperand = None
@@ -929,6 +1123,8 @@ class OperandList(object):
                         self.numFPDestRegs += 1
                     elif op_desc.isIntReg():
                         self.numIntDestRegs += 1
+                    elif op_desc.isVecReg():
+                        self.numVecDestRegs += 1
                     elif op_desc.isCCReg():
                         self.numCCDestRegs += 1
                     elif op_desc.isControlReg():
@@ -1019,11 +1215,16 @@ class SubOperandList(OperandList):
             op = match.groups()
             # regexp groups are operand full name, base, and extension
             (op_full, op_base, op_ext) = op
+            # If is a elem operand, define or update the corresponding
+            # vector operand
+            if op_base in parser.elemToVector:
+                elem_op = op_base
+                op_base = parser.elemToVector[elem_op]
             # find this op in the master list
             op_desc = master_list.find_base(op_base)
             if not op_desc:
-                error('Found operand %s which is not in the master list!' \
-                      ' This is an internal error' % op_base)
+                error('Found operand %s which is not in the master list!'
+                      % op_base)
             else:
                 # See if we've already found this operand
                 op_desc = self.find_base(op_base)
@@ -1080,9 +1281,14 @@ stringRE = re.compile(r'"([^"\\]|\\.)*"')
 commentRE = re.compile(r'(^)?[^\S\n]*/(?:\*(.*?)\*/[^\S\n]*|/[^\n]*)($)?',
         re.DOTALL | re.MULTILINE)
 
-# Regular expression object to match assignment statements
-# (used in findOperands())
-assignRE = re.compile(r'\s*=(?!=)', re.MULTILINE)
+# Regular expression object to match assignment statements (used in
+# findOperands()).  If the code immediately following the first
+# appearance of the operand matches this regex, then the operand
+# appears to be on the LHS of an assignment, and is thus a
+# destination.  basically we're looking for an '=' that's not '=='.
+# The heinous tangle before that handles the case where the operand
+# has an array subscript.
+assignRE = re.compile(r'(\[[^\]]+\])?\s*=(?!=)', re.MULTILINE)
 
 def makeFlagConstructor(flag_list):
     if len(flag_list) == 0:
@@ -1125,6 +1331,8 @@ class InstObjParams(object):
         header += '\n\t_numSrcRegs = 0;'
         header += '\n\t_numDestRegs = 0;'
         header += '\n\t_numFPDestRegs = 0;'
+        header += '\n\t_numVecDestRegs = 0;'
+        header += '\n\t_numVecElemDestRegs = 0;'
         header += '\n\t_numIntDestRegs = 0;'
         header += '\n\t_numCCDestRegs = 0;'
 
@@ -1152,11 +1360,25 @@ class InstObjParams(object):
         # These are good enough for most cases.
         if not self.op_class:
             if 'IsStore' in self.flags:
-                self.op_class = 'MemWriteOp'
+                # The order matters here: 'IsFloating' and 'IsInteger' are
+                # usually set in FP instructions because of the base
+                # register
+                if 'IsFloating' in self.flags:
+                    self.op_class = 'FloatMemWriteOp'
+                else:
+                    self.op_class = 'MemWriteOp'
             elif 'IsLoad' in self.flags or 'IsPrefetch' in self.flags:
-                self.op_class = 'MemReadOp'
+                # The order matters here: 'IsFloating' and 'IsInteger' are
+                # usually set in FP instructions because of the base
+                # register
+                if 'IsFloating' in self.flags:
+                    self.op_class = 'FloatMemReadOp'
+                else:
+                    self.op_class = 'MemReadOp'
             elif 'IsFloating' in self.flags:
                 self.op_class = 'FloatAddOp'
+            elif 'IsVector' in self.flags:
+                self.op_class = 'SimdAddOp'
             else:
                 self.op_class = 'IntAluOp'
 
@@ -1166,8 +1388,12 @@ class InstObjParams(object):
 
         # if 'IsFloating' is set, add call to the FP enable check
         # function (which should be provided by isa_desc via a declare)
+        # if 'IsVector' is set, add call to the Vector enable check
+        # function (which should be provided by isa_desc via a declare)
         if 'IsFloating' in self.flags:
             self.fp_enable_check = 'fault = checkFpEnableFault(xc);'
+        elif 'IsVector' in self.flags:
+            self.fp_enable_check = 'fault = checkVecEnableFault(xc);'
         else:
             self.fp_enable_check = ''
 
@@ -1187,6 +1413,39 @@ class Stack(list):
     def top(self):
         return self[-1]
 
+# Format a file include stack backtrace as a string
+def backtrace(filename_stack):
+    fmt = "In file included from %s:"
+    return "\n".join([fmt % f for f in filename_stack])
+
+
+#######################
+#
+# LineTracker: track filenames along with line numbers in PLY lineno fields
+#     PLY explicitly doesn't do anything with 'lineno' except propagate
+#     it.  This class lets us tie filenames with the line numbers with a
+#     minimum of disruption to existing increment code.
+#
+
+class LineTracker(object):
+    def __init__(self, filename, lineno=1):
+        self.filename = filename
+        self.lineno = lineno
+
+    # Overload '+=' for increments.  We need to create a new object on
+    # each update else every token ends up referencing the same
+    # constantly incrementing instance.
+    def __iadd__(self, incr):
+        return LineTracker(self.filename, self.lineno + incr)
+
+    def __str__(self):
+        return "%s:%d" % (self.filename, self.lineno)
+
+    # In case there are places where someone really expects a number
+    def __int__(self):
+        return self.lineno
+
+
 #######################
 #
 # ISA Parser
@@ -1194,25 +1453,11 @@ class Stack(list):
 #
 
 class ISAParser(Grammar):
-    class CpuModel(object):
-        def __init__(self, name, filename, includes, strings):
-            self.name = name
-            self.filename = filename
-            self.includes = includes
-            self.strings = strings
-
     def __init__(self, output_dir):
         super(ISAParser, self).__init__()
         self.output_dir = output_dir
 
         self.filename = None # for output file watermarking/scaremongering
-
-        self.cpuModels = [
-            ISAParser.CpuModel('ExecContext',
-                               'generic_cpu_exec.cc',
-                               '#include "cpu/exec_context.hh"',
-                               { "CPU_exec_context" : "ExecContext" }),
-            ]
 
         # variable to hold templates
         self.templateMap = {}
@@ -1295,8 +1540,6 @@ class ISAParser(Grammar):
             print >>f, '#if !defined(__SPLIT) || (__SPLIT == 1)'
             self.splits[f] = 1
         # ensure requisite #include's
-        elif filename in ['decoder-g.cc.inc', 'exec-g.cc.inc']:
-            print >>f, '#include "decoder.hh"'
         elif filename == 'decoder-g.hh.inc':
             print >>f, '#include "base/bitfield.hh"'
 
@@ -1307,43 +1550,31 @@ class ISAParser(Grammar):
     # These small files make it much clearer how this tool works, since
     # you directly see the chunks emitted as files that are #include'd.
     def write_top_level_files(self):
-        dep = self.open('inc.d', bare=True)
-
         # decoder header - everything depends on this
         file = 'decoder.hh'
         with self.open(file) as f:
-            inc = []
-
             fn = 'decoder-g.hh.inc'
             assert(fn in self.files)
             f.write('#include "%s"\n' % fn)
-            inc.append(fn)
 
             fn = 'decoder-ns.hh.inc'
             assert(fn in self.files)
             f.write('namespace %s {\n#include "%s"\n}\n'
                     % (self.namespace, fn))
-            inc.append(fn)
-
-            print >>dep, file+':', ' '.join(inc)
 
         # decoder method - cannot be split
         file = 'decoder.cc'
         with self.open(file) as f:
-            inc = []
-
             fn = 'decoder-g.cc.inc'
             assert(fn in self.files)
             f.write('#include "%s"\n' % fn)
-            inc.append(fn)
+
+            fn = 'decoder.hh'
+            f.write('#include "%s"\n' % fn)
 
             fn = 'decode-method.cc.inc'
             # is guaranteed to have been written for parse to complete
             f.write('#include "%s"\n' % fn)
-            inc.append(fn)
-
-            inc.append("decoder.hh")
-            print >>dep, file+':', ' '.join(inc)
 
         extn = re.compile('(\.[^\.]+)$')
 
@@ -1356,12 +1587,12 @@ class ISAParser(Grammar):
             else:
                 file = file_
             with self.open(file) as f:
-                inc = []
-
                 fn = 'decoder-g.cc.inc'
                 assert(fn in self.files)
                 f.write('#include "%s"\n' % fn)
-                inc.append(fn)
+
+                fn = 'decoder.hh'
+                f.write('#include "%s"\n' % fn)
 
                 fn = 'decoder-ns.cc.inc'
                 assert(fn in self.files)
@@ -1370,42 +1601,27 @@ class ISAParser(Grammar):
                     print >>f, '#define __SPLIT %u' % i
                 print >>f, '#include "%s"' % fn
                 print >>f, '}'
-                inc.append(fn)
 
-                inc.append("decoder.hh")
-                print >>dep, file+':', ' '.join(inc)
-
-        # instruction execution per-CPU model
+        # instruction execution
         splits = self.splits[self.get_file('exec')]
-        for cpu in self.cpuModels:
-            for i in range(1, splits+1):
+        for i in range(1, splits+1):
+            file = 'generic_cpu_exec.cc'
+            if splits > 1:
+                file = extn.sub(r'_%d\1' % i, file)
+            with self.open(file) as f:
+                fn = 'exec-g.cc.inc'
+                assert(fn in self.files)
+                f.write('#include "%s"\n' % fn)
+                f.write('#include "cpu/exec_context.hh"\n')
+                f.write('#include "decoder.hh"\n')
+
+                fn = 'exec-ns.cc.inc'
+                assert(fn in self.files)
+                print >>f, 'namespace %s {' % self.namespace
                 if splits > 1:
-                    file = extn.sub(r'_%d\1' % i, cpu.filename)
-                else:
-                    file = cpu.filename
-                with self.open(file) as f:
-                    inc = []
-
-                    fn = 'exec-g.cc.inc'
-                    assert(fn in self.files)
-                    f.write('#include "%s"\n' % fn)
-                    inc.append(fn)
-
-                    f.write(cpu.includes+"\n")
-
-                    fn = 'exec-ns.cc.inc'
-                    assert(fn in self.files)
-                    print >>f, 'namespace %s {' % self.namespace
-                    print >>f, '#define CPU_EXEC_CONTEXT %s' \
-                               % cpu.strings['CPU_exec_context']
-                    if splits > 1:
-                        print >>f, '#define __SPLIT %u' % i
-                    print >>f, '#include "%s"' % fn
-                    print >>f, '}'
-                    inc.append(fn)
-
-                    inc.append("decoder.hh")
-                    print >>dep, file+':', ' '.join(inc)
+                    print >>f, '#define __SPLIT %u' % i
+                print >>f, '#include "%s"' % fn
+                print >>f, '}'
 
         # max_inst_regs.hh
         self.update('max_inst_regs.hh',
@@ -1413,10 +1629,6 @@ class ISAParser(Grammar):
     const int MaxInstSrcRegs = %(maxInstSrcRegs)d;
     const int MaxInstDestRegs = %(maxInstDestRegs)d;
     const int MaxMiscDestRegs = %(maxMiscDestRegs)d;\n}\n''' % self)
-        print >>dep, 'max_inst_regs.hh:'
-
-        dep.close()
-
 
     scaremonger_template ='''// DO NOT EDIT
 // This file was automatically generated from an ISA description:
@@ -1515,7 +1727,7 @@ class ISAParser(Grammar):
         try:
             t.value = int(t.value,0)
         except ValueError:
-            error(t, 'Integer value "%s" too large' % t.value)
+            error(t.lexer.lineno, 'Integer value "%s" too large' % t.value)
             t.value = 0
         return t
 
@@ -1544,13 +1756,13 @@ class ISAParser(Grammar):
         return t
 
     def t_NEWFILE(self, t):
-        r'^\#\#newfile\s+"[^"]*"'
-        self.fileNameStack.push((t.value[11:-1], t.lexer.lineno))
-        t.lexer.lineno = 0
+        r'^\#\#newfile\s+"[^"]*"\n'
+        self.fileNameStack.push(t.lexer.lineno)
+        t.lexer.lineno = LineTracker(t.value[11:-2])
 
     def t_ENDFILE(self, t):
-        r'^\#\#endfile'
-        (old_filename, t.lexer.lineno) = self.fileNameStack.pop()
+        r'^\#\#endfile\n'
+        t.lexer.lineno = self.fileNameStack.pop()
 
     #
     # The functions t_NEWLINE, t_ignore, and t_error are
@@ -1571,7 +1783,7 @@ class ISAParser(Grammar):
 
     # Error handler
     def t_error(self, t):
-        error(t, "illegal character '%s'" % t.value[0])
+        error(t.lexer.lineno, "illegal character '%s'" % t.value[0])
         t.skip(1)
 
     #####################################################################
@@ -1679,13 +1891,10 @@ class ISAParser(Grammar):
 
     # Massage output block by substituting in template definitions and
     # bit operators.  We handle '%'s embedded in the string that don't
-    # indicate template substitutions (or CPU-specific symbols, which
-    # get handled in GenCode) by doubling them first so that the
+    # indicate template substitutions by doubling them first so that the
     # format operation will reduce them back to single '%'s.
     def process_output(self, s):
         s = self.protectNonSubstPercents(s)
-        # protects cpu-specific symbols too
-        s = self.protectCpuSymbols(s)
         return substBitOps(s % self.templateMap)
 
     def p_output(self, t):
@@ -1727,7 +1936,7 @@ del wrap
         except Exception, exc:
             if debug:
                 raise
-            error(t, 'error: %s in global let block "%s".' % (exc, t[2]))
+            error(t.lineno(1), 'In global let block: %s' % exc)
         GenCode(self,
                 header_output=self.exportContext["header_output"],
                 decoder_output=self.exportContext["decoder_output"],
@@ -1743,21 +1952,22 @@ del wrap
         except Exception, exc:
             if debug:
                 raise
-            error(t,
-                  'error: %s in def operand_types block "%s".' % (exc, t[3]))
+            error(t.lineno(1),
+                  'In def operand_types: %s' % exc)
 
     # Define the mapping from operand names to operand classes and
     # other traits.  Stored in operandNameMap.
     def p_def_operands(self, t):
         'def_operands : DEF OPERANDS CODELIT SEMI'
         if not hasattr(self, 'operandTypeMap'):
-            error(t, 'error: operand types must be defined before operands')
+            error(t.lineno(1),
+                  'error: operand types must be defined before operands')
         try:
             user_dict = eval('{' + t[3] + '}', self.exportContext)
         except Exception, exc:
             if debug:
                 raise
-            error(t, 'error: %s in def operands block "%s".' % (exc, t[3]))
+            error(t.lineno(1), 'In def operands: %s' % exc)
         self.buildOperandNameMap(user_dict, t.lexer.lineno)
 
     # A bitfield definition looks like:
@@ -1784,7 +1994,8 @@ del wrap
     def p_def_bitfield_struct(self, t):
         'def_bitfield_struct : DEF opt_signed BITFIELD ID id_with_dot SEMI'
         if (t[2] != ''):
-            error(t, 'error: structure bitfields are always unsigned.')
+            error(t.lineno(1),
+                  'error: structure bitfields are always unsigned.')
         expr = 'machInst.%s' % t[5]
         hash_define = '#undef %s\n#define %s\t%s\n' % (t[4], t[4], expr)
         GenCode(self, header_output=hash_define).emit()
@@ -1938,7 +2149,7 @@ StaticInstPtr
     def p_decode_stmt_list_1(self, t):
         'decode_stmt_list : decode_stmt decode_stmt_list'
         if (t[1].has_decode_default and t[2].has_decode_default):
-            error(t, 'Two default cases in decode block')
+            error(t.lineno(1), 'Two default cases in decode block')
         t[0] = t[1] + t[2]
 
     #
@@ -1985,7 +2196,7 @@ StaticInstPtr
             self.formatStack.push(self.formatMap[t[1]])
             t[0] = ('', '// format %s' % t[1])
         except KeyError:
-            error(t, 'instruction format "%s" not defined.' % t[1])
+            error(t.lineno(1), 'instruction format "%s" not defined.' % t[1])
 
     # Nested decode block: if the value of the current field matches
     # the specified constant(s), do a nested decode on some other field.
@@ -2065,7 +2276,7 @@ StaticInstPtr
         try:
             format = self.formatMap[t[1]]
         except KeyError:
-            error(t, 'instruction format "%s" not defined.' % t[1])
+            error(t.lineno(1), 'instruction format "%s" not defined.' % t[1])
 
         codeObj = format.defineInst(self, t[3], t[5], t.lexer.lineno)
         comment = '\n// %s::%s(%s)\n' % (t[1], t[3], t[5])
@@ -2158,7 +2369,7 @@ StaticInstPtr
     # t.value)
     def p_error(self, t):
         if t:
-            error(t, "syntax error at '%s'" % t.value)
+            error(t.lexer.lineno, "syntax error at '%s'" % t.value)
         else:
             error("unknown syntax error")
 
@@ -2181,40 +2392,6 @@ StaticInstPtr
 
         # create new object and store in global map
         self.formatMap[id] = Format(id, params, code)
-
-    def expandCpuSymbolsToDict(self, template):
-        '''Expand template with CPU-specific references into a
-        dictionary with an entry for each CPU model name.  The entry
-        key is the model name and the corresponding value is the
-        template with the CPU-specific refs substituted for that
-        model.'''
-
-        # Protect '%'s that don't go with CPU-specific terms
-        t = re.sub(r'%(?!\(CPU_)', '%%', template)
-        result = {}
-        for cpu in self.cpuModels:
-            result[cpu.name] = t % cpu.strings
-        return result
-
-    def expandCpuSymbolsToString(self, template):
-        '''*If* the template has CPU-specific references, return a
-        single string containing a copy of the template for each CPU
-        model with the corresponding values substituted in.  If the
-        template has no CPU-specific references, it is returned
-        unmodified.'''
-
-        if template.find('%(CPU_') != -1:
-            return reduce(lambda x,y: x+y,
-                          self.expandCpuSymbolsToDict(template).values())
-        else:
-            return template
-
-    def protectCpuSymbols(self, template):
-        '''Protect CPU-specific references by doubling the
-        corresponding '%'s (in preparation for substituting a different
-        set of references into the template).'''
-
-        return re.sub(r'%(?=\(CPU_)', '%%', template)
 
     def protectNonSubstPercents(self, s):
         '''Protect any non-dict-substitution '%'s in a format string
@@ -2265,6 +2442,16 @@ StaticInstPtr
             if dflt_ext:
                 dflt_ctype = self.operandTypeMap[dflt_ext]
                 attrList.extend(['dflt_ctype', 'dflt_ext'])
+            # reg_spec is either just a string or a dictionary
+            # (for elems of vector)
+            if isinstance(reg_spec, tuple):
+                (reg_spec, elem_spec) = reg_spec
+                if isinstance(elem_spec, str):
+                    attrList.append('elem_spec')
+                else:
+                    assert(isinstance(elem_spec, dict))
+                    elems = elem_spec
+                    attrList.append('elems')
             for attr in attrList:
                 tmp_dict[attr] = eval(attr)
             tmp_dict['base_name'] = op_name
@@ -2288,6 +2475,15 @@ StaticInstPtr
 
         # Define operand variables.
         operands = user_dict.keys()
+        # Add the elems defined in the vector operands and
+        # build a map elem -> vector (used in OperandList)
+        elem_to_vec = {}
+        for op in user_dict.keys():
+            if hasattr(self.operandNameMap[op], 'elems'):
+                for elem in self.operandNameMap[op].elems.keys():
+                    operands.append(elem)
+                    elem_to_vec[elem] = op
+        self.elemToVector = elem_to_vec
         extensions = self.operandTypeMap.keys()
 
         operandsREString = r'''
@@ -2362,7 +2558,7 @@ StaticInstPtr
         except IOError:
             error('Error including file "%s"' % filename)
 
-        self.fileNameStack.push((filename, 0))
+        self.fileNameStack.push(LineTracker(filename))
 
         # Find any includes and include them
         def replace(matchobj):
@@ -2396,8 +2592,8 @@ StaticInstPtr
         # do this up front.
         isa_desc = self.read_and_flatten(isa_desc_file)
 
-        # Initialize filename stack with outer file.
-        self.fileNameStack.push((isa_desc_file, 0))
+        # Initialize lineno tracker
+        self.lex.lineno = LineTracker(isa_desc_file)
 
         # Parse.
         self.parse_string(isa_desc)
@@ -2408,7 +2604,10 @@ StaticInstPtr
         try:
             self._parse_isa_desc(*args, **kwargs)
         except ISAParserError, e:
-            e.exit(self.fileNameStack)
+            print backtrace(self.fileNameStack)
+            print "At %s:" % e.lineno
+            print e
+            sys.exit(1)
 
 # Called as script: get args from command line.
 # Args are: <isa desc file> <output dir>

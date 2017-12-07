@@ -52,6 +52,9 @@
 #ifndef __DEV_ARM_VGIC_H__
 #define __DEV_ARM_VGIC_H__
 
+#include <algorithm>
+#include <array>
+
 #include "base/addr_range.hh"
 #include "base/bitunion.hh"
 #include "cpu/intr_control.hh"
@@ -101,22 +104,10 @@ class VGic : public PioDevice
     static const uint32_t LR_PENDING    = 1;
     static const uint32_t LR_ACTIVE     = 2;
 
-    /** Event definition to post interrupt to CPU after a delay
-    */
-    class PostVIntEvent : public Event
-    {
-      private:
-        uint32_t cpu;
-        Platform *platform;
-      public:
-        PostVIntEvent( uint32_t c, Platform* p)
-            : cpu(c), platform(p)
-        { }
-        void process() { platform->intrctrl->post(cpu, ArmISA::INT_VIRT_IRQ, 0);}
-        const char *description() const { return "Post VInterrupt to CPU"; }
-    };
+    /** Post interrupt to CPU */
+    void processPostVIntEvent(uint32_t cpu);
 
-    PostVIntEvent *postVIntEvent[VGIC_CPU_MAX];
+    EventFunctionWrapper *postVIntEvent[VGIC_CPU_MAX];
     bool        maintIntPosted[VGIC_CPU_MAX];
     bool        vIntPosted[VGIC_CPU_MAX];
 
@@ -162,8 +153,17 @@ class VGic : public PioDevice
     /* State per CPU.  EVERYTHING should be in this struct and simply replicated
      * N times.
      */
-    struct vcpuIntData {
-        ListReg LR[NUM_LR];
+    struct vcpuIntData : public Serializable {
+        vcpuIntData()
+            : vctrl(0), hcr(0), eisr(0), VMGrp0En(0), VMGrp1En(0),
+              VMAckCtl(0), VMFiqEn(0), VMCBPR(0), VEM(0), VMABP(0), VMBP(0),
+              VMPriMask(0)
+        {
+            std::fill(LR.begin(), LR.end(), 0);
+        }
+        virtual ~vcpuIntData() {}
+
+        std::array<ListReg, NUM_LR> LR;
         VCTLR vctrl;
 
         HCR hcr;
@@ -179,9 +179,12 @@ class VGic : public PioDevice
         uint8_t VMABP;
         uint8_t VMBP;
         uint8_t VMPriMask;
+
+        void serialize(CheckpointOut &cp) const override;
+        void unserialize(CheckpointIn &cp) override;
     };
 
-    struct vcpuIntData vcpuData[VGIC_CPU_MAX];
+    struct std::array<vcpuIntData, VGIC_CPU_MAX>  vcpuData;
 
   public:
    typedef VGicParams Params;
@@ -191,14 +194,15 @@ class VGic : public PioDevice
         return dynamic_cast<const Params *>(_params);
     }
     VGic(const Params *p);
+    ~VGic();
 
-    virtual AddrRangeList getAddrRanges() const;
+    AddrRangeList getAddrRanges() const override;
 
-    virtual Tick read(PacketPtr pkt);
-    virtual Tick write(PacketPtr pkt);
+    Tick read(PacketPtr pkt) override;
+    Tick write(PacketPtr pkt) override;
 
-    virtual void serialize(std::ostream &os);
-    virtual void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
   private:
     Tick readVCpu(PacketPtr pkt);
@@ -207,7 +211,7 @@ class VGic : public PioDevice
     Tick writeVCpu(PacketPtr pkt);
     Tick writeCtrl(PacketPtr pkt);
 
-    void updateIntState(int ctx_id);
+    void updateIntState(ContextID ctx_id);
     uint32_t getMISR(struct vcpuIntData *vid);
     void postVInt(uint32_t cpu, Tick when);
     void unPostVInt(uint32_t cpu);

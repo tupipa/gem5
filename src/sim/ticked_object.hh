@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 ARM Limited
+ * Copyright (c) 2013-2014, 2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -48,50 +48,26 @@
 #ifndef __SIM_TICKED_OBJECT_HH__
 #define __SIM_TICKED_OBJECT_HH__
 
-#include "params/TickedObject.hh"
 #include "sim/clocked_object.hh"
+
+class TickedObjectParams;
 
 /** Ticked attaches gem5's event queue/scheduler to evaluate
  *  calls and provides a start/stop interface to ticking.
  *
  *  Ticked is not a ClockedObject but can be attached to one by
  *  inheritance and by calling regStats, serialize/unserialize */
-class Ticked
+class Ticked : public Serializable
 {
   protected:
-    /** An event to call process periodically */
-    class ClockEvent : public Event
-    {
-      public:
-        Ticked &owner;
-
-        ClockEvent(Ticked &owner_, Priority priority) :
-            Event(priority),
-            owner(owner_)
-        { }
-
-        /** Evaluate and reschedule */
-        void
-        process()
-        {
-            ++owner.tickCycles;
-            ++owner.numCycles;
-            owner.countCycles(Cycles(1));
-            owner.evaluate();
-            if (owner.running) {
-                owner.object.schedule(this,
-                    owner.object.clockEdge(Cycles(1)));
-            }
-        }
-    };
-
-    friend class ClockEvent;
-
     /** ClockedObject who is responsible for this Ticked's actions/stats */
     ClockedObject &object;
 
-    /** The single instance of ClockEvent used */
-    ClockEvent event;
+    /** The wrapper for processClockEvent */
+    EventFunctionWrapper event;
+
+    /** Evaluate and reschedule */
+    void processClockEvent();
 
     /** Have I been started? and am not stopped */
     bool running;
@@ -164,8 +140,8 @@ class Ticked
     }
 
     /** Checkpoint lastStopped */
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 
     /** Action to call on the clock tick */
     virtual void evaluate() = 0;
@@ -189,7 +165,7 @@ class Ticked
 class TickedObject : public ClockedObject, public Ticked
 {
   public:
-    TickedObject(TickedObjectParams *params,
+    TickedObject(const TickedObjectParams *params,
         Event::Priority priority = Event::CPU_Tick_Pri);
 
     /** Disambiguate to make these functions overload correctly */
@@ -198,9 +174,9 @@ class TickedObject : public ClockedObject, public Ticked
     using ClockedObject::unserialize;
 
     /** Pass on regStats, serialize etc. onto Ticked */
-    void regStats();
-    void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void regStats() override;
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 #endif /* __SIM_TICKED_OBJECT_HH__ */

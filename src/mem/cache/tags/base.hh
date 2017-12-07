@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2014,2016 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -67,9 +67,17 @@ class BaseTags : public ClockedObject
   protected:
     /** The block size of the cache. */
     const unsigned blkSize;
+    /** Mask out all bits that aren't part of the block offset. */
+    const Addr blkMask;
     /** The size of the cache. */
     const unsigned size;
-    /** The access latency of the cache. */
+    /** The tag lookup latency of the cache. */
+    const Cycles lookupLatency;
+    /**
+     * The total access latency of the cache. This latency
+     * is different depending on the cache access mode
+     * (parallel or sequential)
+     */
     const Cycles accessLatency;
     /** Pointer to the parent cache. */
     BaseCache *cache;
@@ -171,12 +179,6 @@ class BaseTags : public ClockedObject
     virtual void computeStats() {}
 
     /**
-     *iterated through all blocks and clear all locks
-     *Needed to clear all lock tracking at once
-     */
-    virtual void clearLocks() {}
-
-    /**
      * Print all tags used
      */
     virtual std::string print() const = 0;
@@ -187,19 +189,55 @@ class BaseTags : public ClockedObject
     virtual CacheBlk * findBlock(Addr addr, bool is_secure) const = 0;
 
     /**
+     * Align an address to the block size.
+     * @param addr the address to align.
+     * @return The block address.
+     */
+    Addr blkAlign(Addr addr) const
+    {
+        return addr & ~blkMask;
+    }
+
+    /**
      * Calculate the block offset of an address.
      * @param addr the address to get the offset of.
      * @return the block offset.
      */
     int extractBlkOffset(Addr addr) const
     {
-        return (addr & (Addr)(blkSize-1));
+        return (addr & blkMask);
+    }
+
+    /**
+     * Find the cache block given set and way
+     * @param set The set of the block.
+     * @param way The way of the block.
+     * @return The cache block.
+     */
+    virtual CacheBlk *findBlockBySetAndWay(int set, int way) const = 0;
+
+    /**
+     * Limit the allocation for the cache ways.
+     * @param ways The maximum number of ways available for replacement.
+     */
+    virtual void setWayAllocationMax(int ways)
+    {
+        panic("This tag class does not implement way allocation limit!\n");
+    }
+
+    /**
+     * Get the way allocation mask limit.
+     * @return The maximum number of ways available for replacement.
+     */
+    virtual int getWayAllocationMax() const
+    {
+        panic("This tag class does not implement way allocation limit!\n");
+        return -1;
     }
 
     virtual void invalidate(CacheBlk *blk) = 0;
 
-    virtual CacheBlk* accessBlock(Addr addr, bool is_secure, Cycles &lat,
-                                  int context_src) = 0;
+    virtual CacheBlk* accessBlock(Addr addr, bool is_secure, Cycles &lat) = 0;
 
     virtual Addr extractTag(Addr addr) const = 0;
 

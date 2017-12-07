@@ -41,20 +41,15 @@
 #define __ARCH_X86_TLB_HH__
 
 #include <list>
-#include <string>
 #include <vector>
 
 #include "arch/generic/tlb.hh"
-#include "arch/x86/regs/segment.hh"
 #include "arch/x86/pagetable.hh"
 #include "base/trie.hh"
-#include "mem/mem_object.hh"
 #include "mem/request.hh"
 #include "params/X86TLB.hh"
-#include "sim/sim_object.hh"
 
 class ThreadContext;
-class Packet;
 
 namespace X86ISA
 {
@@ -74,7 +69,7 @@ namespace X86ISA
         typedef X86TLBParams Params;
         TLB(const Params *p);
 
-        void takeOverFrom(BaseTLB *otlb) {}
+        void takeOverFrom(BaseTLB *otlb) override {}
 
         TlbEntry *lookup(Addr va, bool update_lru = true);
 
@@ -89,21 +84,27 @@ namespace X86ISA
       public:
         Walker *getWalker();
 
-        void flushAll();
+        void flushAll() override;
 
         void flushNonGlobal();
 
-        void demapPage(Addr va, uint64_t asn);
+        void demapPage(Addr va, uint64_t asn) override;
 
       protected:
         uint32_t size;
 
-        TlbEntry * tlb;
+        std::vector<TlbEntry> tlb;
 
         EntryList freeList;
 
         TlbEntryTrie trie;
         uint64_t lruSeq;
+
+        // Statistics
+        Stats::Scalar rdAccesses;
+        Stats::Scalar wrAccesses;
+        Stats::Scalar rdMisses;
+        Stats::Scalar wrMisses;
 
         Fault translateInt(RequestPtr req, ThreadContext *tc);
 
@@ -147,9 +148,14 @@ namespace X86ISA
 
         TlbEntry * insert(Addr vpn, TlbEntry &entry);
 
+        /*
+         * Function to register Stats
+         */
+        void regStats() override;
+
         // Checkpointing
-        virtual void serialize(std::ostream &os);
-        virtual void unserialize(Checkpoint *cp, const std::string &section);
+        void serialize(CheckpointOut &cp) const override;
+        void unserialize(CheckpointIn &cp) override;
 
         /**
          * Get the table walker master port. This is used for
@@ -161,7 +167,7 @@ namespace X86ISA
          *
          * @return A pointer to the walker master port
          */
-        virtual BaseMasterPort *getMasterPort();
+        BaseMasterPort *getMasterPort() override;
     };
 }
 

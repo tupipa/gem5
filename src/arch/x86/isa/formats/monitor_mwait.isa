@@ -45,38 +45,31 @@ def format MonitorInst(code, *opt_flags) {{
 
 // Mwait instruction
 
-// Declarations for execute() methods.
-def template MwaitExecDeclare {{
-    Fault execute(%(CPU_exec_context)s *, Trace::InstRecord *) const;
-    Fault initiateAcc(%(CPU_exec_context)s *, Trace::InstRecord *) const;
-    Fault completeAcc(PacketPtr, %(CPU_exec_context)s *,
-                      Trace::InstRecord *) const;
-}};
-
 def template MwaitDeclare {{
     class %(class_name)s : public %(base_class)s
     {
         public:
         // Constructor.
         %(class_name)s(ExtMachInst machInst);
-        %(MwaitExecDeclare)s
+        Fault execute(ExecContext *, Trace::InstRecord *) const;
+        Fault initiateAcc(ExecContext *, Trace::InstRecord *) const;
+        Fault completeAcc(PacketPtr, ExecContext *, Trace::InstRecord *) const;
     };
 }};
 
 def template MwaitInitiateAcc {{
-    Fault %(class_name)s::initiateAcc(CPU_EXEC_CONTEXT * xc,
+    Fault %(class_name)s::initiateAcc(ExecContext * xc,
             Trace::InstRecord * traceData) const
     {
-        uint64_t m = 0;          //mem
         unsigned s = 0x8;        //size
         unsigned f = 0;          //flags
-        readMemTiming(xc, traceData, xc->getAddrMonitor()->vAddr, m, s, f);
+        initiateMemRead(xc, traceData, xc->getAddrMonitor()->vAddr, s, f);
         return NoFault;
     }
 }};
 
 def template MwaitCompleteAcc {{
-    Fault %(class_name)s::completeAcc(PacketPtr pkt, CPU_EXEC_CONTEXT *xc,
+    Fault %(class_name)s::completeAcc(PacketPtr pkt, ExecContext *xc,
             Trace::InstRecord *traceData) const
     {
         MicroHalt hltObj(machInst, mnemonic, 0x0);

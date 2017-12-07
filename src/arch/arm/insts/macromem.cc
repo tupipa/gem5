@@ -40,9 +40,9 @@
  * Authors: Stephen Hines
  */
 
-#include <sstream>
-
 #include "arch/arm/insts/macromem.hh"
+
+#include <sstream>
 
 #include "arch/arm/generated/decoder.hh"
 #include "arch/arm/insts/neon64_mem.hh"
@@ -145,7 +145,7 @@ MacroMemOp::MacroMemOp(const char *mnem, ExtMachInst machInst,
             // 32-bit memory operation
             // Find register for operation
             unsigned reg_idx;
-            while(!bits(regs, reg)) reg++;
+            while (!bits(regs, reg)) reg++;
             replaceBits(regs, reg, 0);
             reg_idx = force_user ? intRegInMode(MODE_USER, reg) : reg;
 
@@ -1149,7 +1149,7 @@ VldMultOp64::VldMultOp64(const char *mnem, ExtMachInst machInst,
         TLB::AllowUnaligned;
 
     int i = 0;
-    for(; i < numMemMicroops - 1; ++i) {
+    for (; i < numMemMicroops - 1; ++i) {
         microOps[uopIdx++] = new MicroNeonLoad64(
             machInst, vx + (RegIndex) i, rnsp, 16 * i, memaccessFlags,
             baseIsSP, 16 /* accSize */, eSize);
@@ -1231,7 +1231,7 @@ VstMultOp64::VstMultOp64(const char *mnem, ExtMachInst machInst,
     microOps = new StaticInstPtr[numMicroops];
     unsigned uopIdx = 0;
 
-    for(int i = 0; i < numMarshalMicroops; ++i) {
+    for (int i = 0; i < numMarshalMicroops; ++i) {
         switch (numRegs) {
             case 1: microOps[uopIdx++] = new MicroIntNeon64_1Reg(
                         machInst, vx + (RegIndex) (2 * i), vd, eSize, dataSize,
@@ -1257,7 +1257,7 @@ VstMultOp64::VstMultOp64(const char *mnem, ExtMachInst machInst,
         TLB::AllowUnaligned;
 
     int i = 0;
-    for(; i < numMemMicroops - 1; ++i) {
+    for (; i < numMemMicroops - 1; ++i) {
         microOps[uopIdx++] = new MicroNeonStore64(
             machInst, vx + (RegIndex) i, rnsp, 16 * i, memaccessFlags,
             baseIsSP, 16 /* accSize */, eSize);
@@ -1347,7 +1347,7 @@ VldSingleOp64::VldSingleOp64(const char *mnem, ExtMachInst machInst,
         }
     }
 
-    for(int i = 0; i < numMarshalMicroops; ++i) {
+    for (int i = 0; i < numMarshalMicroops; ++i) {
         microOps[uopIdx++] = new MicroUnpackNeon64(
             machInst, vd + (RegIndex) (2 * i), vx, eSize, dataSize,
             numStructElems, index, i /* step */, replicate);
@@ -1394,7 +1394,7 @@ VstSingleOp64::VstSingleOp64(const char *mnem, ExtMachInst machInst,
     microOps = new StaticInstPtr[numMicroops];
     unsigned uopIdx = 0;
 
-    for(int i = 0; i < numMarshalMicroops; ++i) {
+    for (int i = 0; i < numMarshalMicroops; ++i) {
         microOps[uopIdx++] = new MicroPackNeon64(
             machInst, vx + (RegIndex) (2 * i), vd, eSize, dataSize,
             numStructElems, index, i /* step */, replicate);
@@ -1404,7 +1404,7 @@ VstSingleOp64::VstSingleOp64(const char *mnem, ExtMachInst machInst,
         TLB::AllowUnaligned;
 
     int i = 0;
-    for(; i < numMemMicroops - 1; ++i) {
+    for (; i < numMemMicroops - 1; ++i) {
         microOps[uopIdx++] = new MicroNeonStore64(
             machInst, vx + (RegIndex) i, rnsp, 16 * i, memaccessFlags,
             baseIsSP, 16 /* accsize */, eSize);
@@ -1525,9 +1525,9 @@ MicroIntImmOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, ura);
+    printIntReg(ss, ura);
     ss << ", ";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     ss << ", ";
     ccprintf(ss, "#%d", imm);
     return ss.str();
@@ -1538,9 +1538,9 @@ MicroIntImmXOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, ura);
+    printIntReg(ss, ura);
     ss << ", ";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     ss << ", ";
     ccprintf(ss, "#%d", imm);
     return ss.str();
@@ -1560,9 +1560,9 @@ MicroIntRegXOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, ura);
+    printIntReg(ss, ura);
     ccprintf(ss, ", ");
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     printExtendOperand(false, ss, (IntRegIndex)urc, type, shiftAmt);
     return ss.str();
 }
@@ -1572,9 +1572,9 @@ MicroIntMov::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, ura);
+    printIntReg(ss, ura);
     ss << ", ";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     return ss.str();
 }
 
@@ -1583,11 +1583,11 @@ MicroIntOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, ura);
+    printIntReg(ss, ura);
     ss << ", ";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     ss << ", ";
-    printReg(ss, urc);
+    printIntReg(ss, urc);
     return ss.str();
 }
 
@@ -1597,11 +1597,11 @@ MicroMemOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
     std::stringstream ss;
     printMnemonic(ss);
     if (isFloating())
-        printReg(ss, ura + FP_Reg_Base);
+        printFloatReg(ss, ura);
     else
-        printReg(ss, ura);
+        printIntReg(ss, ura);
     ss << ", [";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     ss << ", ";
     ccprintf(ss, "#%d", imm);
     ss << "]";
@@ -1613,11 +1613,11 @@ MicroMemPairOp::generateDisassembly(Addr pc, const SymbolTable *symtab) const
 {
     std::stringstream ss;
     printMnemonic(ss);
-    printReg(ss, dest);
+    printIntReg(ss, dest);
     ss << ",";
-    printReg(ss, dest2);
+    printIntReg(ss, dest2);
     ss << ", [";
-    printReg(ss, urb);
+    printIntReg(ss, urb);
     ss << ", ";
     ccprintf(ss, "#%d", imm);
     ss << "]";

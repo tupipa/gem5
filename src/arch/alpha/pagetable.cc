@@ -29,12 +29,13 @@
  */
 
 #include "arch/alpha/pagetable.hh"
+
 #include "sim/serialize.hh"
 
 namespace AlphaISA {
 
 void
-TlbEntry::serialize(std::ostream &os)
+TlbEntry::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(tag);
     SERIALIZE_SCALAR(ppn);
@@ -48,7 +49,7 @@ TlbEntry::serialize(std::ostream &os)
 }
 
 void
-TlbEntry::unserialize(Checkpoint *cp, const std::string &section)
+TlbEntry::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(tag);
     UNSERIALIZE_SCALAR(ppn);

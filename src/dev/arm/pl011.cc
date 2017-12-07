@@ -48,15 +48,14 @@
 #include "debug/Uart.hh"
 #include "dev/arm/amba_device.hh"
 #include "dev/arm/base_gic.hh"
-#include "dev/terminal.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
-#include "sim/sim_exit.hh"
 #include "params/Pl011.hh"
+#include "sim/sim_exit.hh"
 
 Pl011::Pl011(const Pl011Params *p)
     : Uart(p, 0xfff),
-      intEvent(this),
+      intEvent([this]{ generateInterrupt(); }, name()),
       control(0x300), fbrd(0), ibrd(0), lcrh(0), ifls(0x12),
       imsc(0), rawInt(0),
       gic(p->gic), endOnEOT(p->end_on_eot), intNum(p->int_num),
@@ -81,17 +80,23 @@ Pl011::read(PacketPtr pkt)
     switch(daddr) {
       case UART_DR:
         data = 0;
-        if (term->dataAvailable()) {
-            data = term->in();
+        if (device->dataAvailable()) {
+            data = device->readData();
             // Since we don't simulate a FIFO for incoming data, we
             // assume it's empty and clear RXINTR and RTINTR.
             clearInterrupts(UART_RXINTR | UART_RTINTR);
+            if (device->dataAvailable()) {
+                DPRINTF(Uart, "Re-raising interrupt due to more data "
+                        "after UART_DR read\n");
+                dataAvailable();
+            }
         }
         break;
       case UART_FR:
         data =
             UART_FR_CTS | // Clear To Send
-            (!term->dataAvailable() ? UART_FR_RXFE : 0) | // RX FIFO Empty
+            // Given we do not simulate a FIFO we are either empty or full.
+            (!device->dataAvailable() ? UART_FR_RXFE : UART_FR_RXFF) |
             UART_FR_TXFE; // TX FIFO empty
 
         DPRINTF(Uart,
@@ -193,7 +198,7 @@ Pl011::write(PacketPtr pkt)
           if ((data & 0xFF) == 0x04 && endOnEOT)
             exitSimLoop("UART received EOT", 0);
 
-        term->out(data & 0xFF);
+        device->writeData(data & 0xFF);
         // We're supposed to clear TXINTR when this register is
         // written to, however. since we're also infinitely fast, we
         // need to immediately raise it again.
@@ -223,6 +228,11 @@ Pl011::write(PacketPtr pkt)
       case UART_ICR:
         DPRINTF(Uart, "Clearing interrupts 0x%x\n", data);
         clearInterrupts(data);
+        if (device->dataAvailable()) {
+            DPRINTF(Uart, "Re-raising interrupt due to more data after "
+                    "UART_ICR write\n");
+            dataAvailable();
+        }
         break;
       default:
         panic("Tried to write PL011 at offset %#x that doesn't exist\n", daddr);
@@ -272,7 +282,7 @@ Pl011::setInterrupts(uint16_t ints, uint16_t mask)
 
 
 void
-Pl011::serialize(std::ostream &os)
+Pl011::serialize(CheckpointOut &cp) const
 {
     DPRINTF(Checkpoint, "Serializing Arm PL011\n");
     SERIALIZE_SCALAR(control);
@@ -282,12 +292,12 @@ Pl011::serialize(std::ostream &os)
     SERIALIZE_SCALAR(ifls);
 
     // Preserve backwards compatibility by giving these silly names.
-    paramOut(os, "imsc_serial", imsc);
-    paramOut(os, "rawInt_serial", rawInt);
+    paramOut(cp, "imsc_serial", imsc);
+    paramOut(cp, "rawInt_serial", rawInt);
 }
 
 void
-Pl011::unserialize(Checkpoint *cp, const std::string &section)
+Pl011::unserialize(CheckpointIn &cp)
 {
     DPRINTF(Checkpoint, "Unserializing Arm PL011\n");
 
@@ -298,8 +308,8 @@ Pl011::unserialize(Checkpoint *cp, const std::string &section)
     UNSERIALIZE_SCALAR(ifls);
 
     // Preserve backwards compatibility by giving these silly names.
-    paramIn(cp, section, "imsc_serial", imsc);
-    paramIn(cp, section, "rawInt_serial", rawInt);
+    paramIn(cp, "imsc_serial", imsc);
+    paramIn(cp, "rawInt_serial", rawInt);
 }
 
 Pl011 *

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2013,2017 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -64,7 +64,10 @@ template <class XC>
 inline void
 handleLockedSnoop(XC *xc, PacketPtr pkt, Addr cacheBlockMask)
 {
-    DPRINTF(LLSC,"%s:  handleing snoop for address: %#x locked: %d\n",
+    // Should only every see invalidations / direct writes
+    assert(pkt->isInvalidate() || pkt->isWrite());
+
+    DPRINTF(LLSC,"%s:  handling snoop for address: %#x locked: %d\n",
             xc->getCpuPtr()->name(),pkt->getAddr(),
             xc->readMiscReg(MISCREG_LOCKFLAG));
     if (!xc->readMiscReg(MISCREG_LOCKFLAG))
@@ -74,7 +77,7 @@ handleLockedSnoop(XC *xc, PacketPtr pkt, Addr cacheBlockMask)
     // If no caches are attached, the snoop address always needs to be masked
     Addr snoop_addr = pkt->getAddr() & cacheBlockMask;
 
-    DPRINTF(LLSC,"%s:  handleing snoop for address: %#x locked addr: %#x\n",
+    DPRINTF(LLSC,"%s:  handling snoop for address: %#x locked addr: %#x\n",
             xc->getCpuPtr()->name(),snoop_addr, locked_addr);
     if (locked_addr == snoop_addr) {
         DPRINTF(LLSC,"%s: address match, clearing lock and signaling sev\n",
@@ -82,7 +85,7 @@ handleLockedSnoop(XC *xc, PacketPtr pkt, Addr cacheBlockMask)
         xc->setMiscReg(MISCREG_LOCKFLAG, false);
         // Implement ARMv8 WFE/SEV semantics
         xc->setMiscReg(MISCREG_SEV_MAILBOX, true);
-        xc->getCpuPtr()->wakeup();
+        xc->getCpuPtr()->wakeup(xc->threadId());
     }
 }
 
@@ -145,6 +148,20 @@ handleLockedWrite(XC *xc, Request *req, Addr cacheBlockMask)
     return true;
 }
 
+template <class XC>
+inline void
+globalClearExclusive(XC *xc)
+{
+    // A spinlock would typically include a Wait For Event (WFE) to
+    // conserve energy. The ARMv8 architecture specifies that an event
+    // is automatically generated when clearing the exclusive monitor
+    // to wake up the processor in WFE.
+    DPRINTF(LLSC,"Clearing lock and signaling sev\n");
+    xc->setMiscReg(MISCREG_LOCKFLAG, false);
+    // Implement ARMv8 WFE/SEV semantics
+    xc->setMiscReg(MISCREG_SEV_MAILBOX, true);
+    xc->getCpuPtr()->wakeup(xc->threadId());
+}
 
 } // namespace ArmISA
 

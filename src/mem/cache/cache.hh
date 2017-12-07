@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014 ARM Limited
+ * Copyright (c) 2012-2017 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -49,14 +49,18 @@
  * Describes a cache based on template policies.
  */
 
-#ifndef __CACHE_HH__
-#define __CACHE_HH__
+#ifndef __MEM_CACHE_CACHE_HH__
+#define __MEM_CACHE_CACHE_HH__
 
-#include "base/misc.hh" // fatal, panic, and warn
+#include <unordered_set>
+
+#include "base/logging.hh" // fatal, panic, and warn
+#include "enums/Clusivity.hh"
 #include "mem/cache/base.hh"
 #include "mem/cache/blk.hh"
 #include "mem/cache/mshr.hh"
 #include "mem/cache/tags/base.hh"
+#include "params/Cache.hh"
 #include "sim/eventq.hh"
 
 //Forward decleration
@@ -69,11 +73,6 @@ class BasePrefetcher;
  */
 class Cache : public BaseCache
 {
-  public:
-
-    /** A typedef for a list of CacheBlk pointers. */
-    typedef std::list<CacheBlk*> BlkList;
-
   protected:
 
     /**
@@ -90,6 +89,8 @@ class Cache : public BaseCache
       protected:
 
         virtual bool recvTimingSnoopResp(PacketPtr pkt);
+
+        virtual bool tryTiming(PacketPtr pkt);
 
         virtual bool recvTimingReq(PacketPtr pkt);
 
@@ -135,6 +136,23 @@ class Cache : public BaseCache
          */
         virtual void sendDeferredPacket();
 
+        /**
+         * Check if there is a conflicting snoop response about to be
+         * send out, and if so simply stall any requests, and schedule
+         * a send event at the same time as the next snoop response is
+         * being sent out.
+         */
+        bool checkConflictingSnoop(Addr addr)
+        {
+            if (snoopRespQueue.hasAddr(addr)) {
+                DPRINTF(CachePort, "Waiting for snoop response to be "
+                        "sent\n");
+                Tick when = snoopRespQueue.deferredPacketReadyTime();
+                schedSendEvent(when);
+                return true;
+            }
+            return false;
+        }
     };
 
     /**
@@ -193,12 +211,62 @@ class Cache : public BaseCache
      */
     const bool prefetchOnAccess;
 
-    /**
-     * @todo this is a temporary workaround until the 4-phase code is committed.
-     * upstream caches need this packet until true is returned, so hold it for
-     * deletion until a subsequent call
+     /**
+     * Clusivity with respect to the upstream cache, determining if we
+     * fill into both this cache and the cache above on a miss. Note
+     * that we currently do not support strict clusivity policies.
      */
-    std::vector<PacketPtr> pendingDelete;
+    const Enums::Clusivity clusivity;
+
+     /**
+     * Determine if clean lines should be written back or not. In
+     * cases where a downstream cache is mostly inclusive we likely
+     * want it to act as a victim cache also for lines that have not
+     * been modified. Hence, we cannot simply drop the line (or send a
+     * clean evict), but rather need to send the actual data.
+     */
+    const bool writebackClean;
+
+    /**
+     * Upstream caches need this packet until true is returned, so
+     * hold it for deletion until a subsequent call
+     */
+    std::unique_ptr<Packet> pendingDelete;
+
+    /**
+     * Writebacks from the tempBlock, resulting on the response path
+     * in atomic mode, must happen after the call to recvAtomic has
+     * finished (for the right ordering of the packets). We therefore
+     * need to hold on to the packets, and have a method and an event
+     * to send them.
+     */
+    PacketPtr tempBlockWriteback;
+
+    /**
+     * Send the outstanding tempBlock writeback. To be called after
+     * recvAtomic finishes in cases where the block we filled is in
+     * fact the tempBlock, and now needs to be written back.
+     */
+    void writebackTempBlockAtomic() {
+        assert(tempBlockWriteback != nullptr);
+        PacketList writebacks{tempBlockWriteback};
+        doWritebacksAtomic(writebacks);
+        tempBlockWriteback = nullptr;
+    }
+
+    /**
+     * An event to writeback the tempBlock after recvAtomic
+     * finishes. To avoid other calls to recvAtomic getting in
+     * between, we create this event with a higher priority.
+     */
+    EventFunctionWrapper writebackTempBlockAtomicEvent;
+
+    /**
+     * Store the outstanding requests that we are expecting snoop
+     * responses from so we can determine which snoop responses we
+     * generated and which ones were merely forwarded.
+     */
+    std::unordered_set<RequestPtr> outstandingSnoop;
 
     /**
      * Does all the processing necessary to perform the provided request.
@@ -220,10 +288,28 @@ class Cache : public BaseCache
      * Find a block frame for new block at address addr targeting the
      * given security space, assuming that the block is not currently
      * in the cache.  Append writebacks if any to provided packet
-     * list.  Return free block frame.  May return NULL if there are
+     * list.  Return free block frame.  May return nullptr if there are
      * no replaceable blocks at the moment.
      */
     CacheBlk *allocateBlock(Addr addr, bool is_secure, PacketList &writebacks);
+
+    /**
+     * Invalidate a cache block.
+     *
+     * @param blk Block to invalidate
+     */
+    void invalidateBlock(CacheBlk *blk);
+
+    /**
+     * Maintain the clusivity of this cache by potentially
+     * invalidating a block. This method works in conjunction with
+     * satisfyRequest, but is separate to allow us to handle all MSHR
+     * targets before potentially dropping a block.
+     *
+     * @param from_cache Whether we have dealt with a packet from a cache
+     * @param blk The block that should potentially be dropped
+     */
+    void maintainClusivity(bool from_cache, CacheBlk *blk);
 
     /**
      * Populates a cache block and handles all outstanding requests for the
@@ -232,11 +318,34 @@ class Cache : public BaseCache
      * @param pkt The memory request with the fill data.
      * @param blk The cache block if it already exists.
      * @param writebacks List for any writebacks that need to be performed.
+     * @param allocate Whether to allocate a block or use the temp block
      * @return Pointer to the new cache block.
      */
     CacheBlk *handleFill(PacketPtr pkt, CacheBlk *blk,
-                        PacketList &writebacks);
+                         PacketList &writebacks, bool allocate);
 
+    /**
+     * Determine whether we should allocate on a fill or not. If this
+     * cache is mostly inclusive with regards to the upstream cache(s)
+     * we always allocate (for any non-forwarded and cacheable
+     * requests). In the case of a mostly exclusive cache, we allocate
+     * on fill if the packet did not come from a cache, thus if we:
+     * are dealing with a whole-line write (the latter behaves much
+     * like a writeback), the original target packet came from a
+     * non-caching source, or if we are performing a prefetch or LLSC.
+     *
+     * @param cmd Command of the incoming requesting packet
+     * @return Whether we should allocate on the fill
+     */
+    inline bool allocOnFill(MemCmd cmd) const override
+    {
+        return clusivity == Enums::mostly_incl ||
+            cmd == MemCmd::WriteLineReq ||
+            cmd == MemCmd::ReadReq ||
+            cmd == MemCmd::WriteReq ||
+            cmd.isPrefetch() ||
+            cmd.isLLSC();
+    }
 
     /**
      * Performs the access specified by the request.
@@ -244,6 +353,22 @@ class Cache : public BaseCache
      * @return The result of the access.
      */
     bool recvTimingReq(PacketPtr pkt);
+
+    /**
+     * Insert writebacks into the write buffer
+     */
+    void doWritebacks(PacketList& writebacks, Tick forward_time);
+
+    /**
+     * Send writebacks down the memory hierarchy in atomic mode
+     */
+    void doWritebacksAtomic(PacketList& writebacks);
+
+    /**
+     * Handling the special case of uncacheable write responses to
+     * make recvTimingResp less cluttered.
+     */
+    void handleUncacheableWriteResp(PacketPtr pkt);
 
     /**
      * Handles a response (cache line fill/write ack) from the bus.
@@ -285,21 +410,40 @@ class Cache : public BaseCache
      */
     void functionalAccess(PacketPtr pkt, bool fromCpuSide);
 
-    void satisfyCpuSideRequest(PacketPtr pkt, CacheBlk *blk,
-                               bool deferred_response = false,
-                               bool pending_downgrade = false);
-    bool satisfyMSHR(MSHR *mshr, PacketPtr pkt, CacheBlk *blk);
+    /**
+     * Perform any necessary updates to the block and perform any data
+     * exchange between the packet and the block. The flags of the
+     * packet are also set accordingly.
+     *
+     * @param pkt Request packet from upstream that hit a block
+     * @param blk Cache block that the packet hit
+     * @param deferred_response Whether this hit is to block that
+     *                          originally missed
+     * @param pending_downgrade Whether the writable flag is to be removed
+     *
+     * @return True if the block is to be invalidated
+     */
+    void satisfyRequest(PacketPtr pkt, CacheBlk *blk,
+                        bool deferred_response = false,
+                        bool pending_downgrade = false);
 
     void doTimingSupplyResponse(PacketPtr req_pkt, const uint8_t *blk_data,
                                 bool already_copied, bool pending_inval);
 
     /**
-     * Sets the blk to the new state.
-     * @param blk The cache block being snooped.
-     * @param new_state The new coherence state for the block.
+     * Perform an upward snoop if needed, and update the block state
+     * (possibly invalidating the block). Also create a response if required.
+     *
+     * @param pkt Snoop packet
+     * @param blk Cache block being snooped
+     * @param is_timing Timing or atomic for the response
+     * @param is_deferred Is this a deferred snoop or not?
+     * @param pending_inval Do we have a pending invalidation?
+     *
+     * @return The snoop delay incurred by the upwards snoop
      */
-    void handleSnoop(PacketPtr ptk, CacheBlk *blk,
-                     bool is_timing, bool is_deferred, bool pending_inval);
+    uint32_t handleSnoop(PacketPtr pkt, CacheBlk *blk,
+                         bool is_timing, bool is_deferred, bool pending_inval);
 
     /**
      * Create a writeback request for the given block.
@@ -308,10 +452,25 @@ class Cache : public BaseCache
      */
     PacketPtr writebackBlk(CacheBlk *blk);
 
+    /**
+     * Create a writeclean request for the given block.
+     * @param blk The block to write clean
+     * @param dest The destination of this clean operation
+     * @return The write clean packet for the block.
+     */
+    PacketPtr writecleanBlk(CacheBlk *blk, Request::Flags dest, PacketId id);
 
-    void memWriteback();
-    void memInvalidate();
-    bool isDirty() const;
+    /**
+     * Create a CleanEvict request for the given block.
+     * @param blk The block to evict.
+     * @return The CleanEvict request for the block.
+     */
+    PacketPtr cleanEvictBlk(CacheBlk *blk);
+
+
+    void memWriteback() override;
+    void memInvalidate() override;
+    bool isDirty() const override;
 
     /**
      * Cache block visitor that writes back dirty cache blocks using
@@ -330,89 +489,92 @@ class Cache : public BaseCache
     bool invalidateVisitor(CacheBlk &blk);
 
     /**
-     * Squash all requests associated with specified thread.
-     * intended for use by I-cache.
-     * @param threadNum The thread to squash.
-     */
-    void squash(int threadNum);
-
-    /**
-     * Generate an appropriate downstream bus request packet for the
+     * Create an appropriate downstream bus request packet for the
      * given parameters.
-     * @param cpu_pkt  The upstream request that needs to be satisfied.
+     * @param cpu_pkt  The miss that needs to be satisfied.
      * @param blk The block currently in the cache corresponding to
-     * cpu_pkt (NULL if none).
-     * @param needsExclusive  Indicates that an exclusive copy is required
+     * cpu_pkt (nullptr if none).
+     * @param needsWritable Indicates that the block must be writable
      * even if the request in cpu_pkt doesn't indicate that.
-     * @return A new Packet containing the request, or NULL if the
+     * @return A new Packet containing the request, or nullptr if the
      * current request in cpu_pkt should just be forwarded on.
      */
-    PacketPtr getBusPacket(PacketPtr cpu_pkt, CacheBlk *blk,
-                           bool needsExclusive) const;
+    PacketPtr createMissPacket(PacketPtr cpu_pkt, CacheBlk *blk,
+                               bool needsWritable) const;
 
     /**
-     * Return the next MSHR to service, either a pending miss from the
-     * mshrQueue, a buffered write from the write buffer, or something
-     * from the prefetcher.  This function is responsible for
-     * prioritizing among those sources on the fly.
+     * Return the next queue entry to service, either a pending miss
+     * from the MSHR queue, a buffered write from the write buffer, or
+     * something from the prefetcher. This function is responsible
+     * for prioritizing among those sources on the fly.
      */
-    MSHR *getNextMSHR();
+    QueueEntry* getNextQueueEntry();
 
     /**
-     * Selects an outstanding request to service.  Called when the
-     * cache gets granted the downstream bus in timing mode.
-     * @return The request to service, NULL if none found.
+     * Send up a snoop request and find cached copies. If cached copies are
+     * found, set the BLOCK_CACHED flag in pkt.
      */
-    PacketPtr getTimingPacket();
-
-    /**
-     * Marks a request as in service (sent on the bus). This can have
-     * side effect since storage for no response commands is
-     * deallocated once they are successfully sent. Also remember if
-     * we are expecting a dirty response from another cache,
-     * effectively making this MSHR the ordering point.
-     */
-    void markInService(MSHR *mshr, bool pending_dirty_resp);
+    bool isCachedAbove(PacketPtr pkt, bool is_timing = true) const;
 
     /**
      * Return whether there are any outstanding misses.
      */
     bool outstandingMisses() const
     {
-        return mshrQueue.allocated != 0;
+        return !mshrQueue.isEmpty();
     }
 
     CacheBlk *findBlock(Addr addr, bool is_secure) const {
         return tags->findBlock(addr, is_secure);
     }
 
-    bool inCache(Addr addr, bool is_secure) const {
+    bool inCache(Addr addr, bool is_secure) const override {
         return (tags->findBlock(addr, is_secure) != 0);
     }
 
-    bool inMissQueue(Addr addr, bool is_secure) const {
+    bool inMissQueue(Addr addr, bool is_secure) const override {
         return (mshrQueue.findMatch(addr, is_secure) != 0);
     }
 
     /**
      * Find next request ready time from among possible sources.
      */
-    Tick nextMSHRReadyTime() const;
+    Tick nextQueueReadyTime() const;
 
   public:
     /** Instantiates a basic cache object. */
-    Cache(const Params *p);
+    Cache(const CacheParams *p);
 
     /** Non-default destructor is needed to deallocate memory. */
     virtual ~Cache();
 
-    void regStats();
+    void regStats() override;
+
+    /**
+     * Take an MSHR, turn it into a suitable downstream packet, and
+     * send it out. This construct allows a queue entry to choose a suitable
+     * approach based on its type.
+     *
+     * @param mshr The MSHR to turn into a packet and send
+     * @return True if the port is waiting for a retry
+     */
+    bool sendMSHRQueuePacket(MSHR* mshr);
+
+    /**
+     * Similar to sendMSHR, but for a write-queue entry
+     * instead. Create the packet, and send it, and if successful also
+     * mark the entry in service.
+     *
+     * @param wq_entry The write-queue entry to turn into a packet and send
+     * @return True if the port is waiting for a retry
+     */
+    bool sendWriteQueuePacket(WriteQueueEntry* wq_entry);
 
     /** serialize the state of the caches
      * We currently don't support checkpointing cache state, so this panics.
      */
-    virtual void serialize(std::ostream &os);
-    void unserialize(Checkpoint *cp, const std::string &section);
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 /**
@@ -431,7 +593,7 @@ class CacheBlkVisitorWrapper : public CacheBlkVisitor
     CacheBlkVisitorWrapper(Cache &_cache, VisitorPtr _visitor)
         : cache(_cache), visitor(_visitor) {}
 
-    bool operator()(CacheBlk &blk) M5_ATTR_OVERRIDE {
+    bool operator()(CacheBlk &blk) override {
         return (cache.*visitor)(blk);
     }
 
@@ -453,7 +615,7 @@ class CacheBlkIsDirtyVisitor : public CacheBlkVisitor
     CacheBlkIsDirtyVisitor()
         : _isDirty(false) {}
 
-    bool operator()(CacheBlk &blk) M5_ATTR_OVERRIDE {
+    bool operator()(CacheBlk &blk) override {
         if (blk.isDirty()) {
             _isDirty = true;
             return false;
@@ -473,4 +635,4 @@ class CacheBlkIsDirtyVisitor : public CacheBlkVisitor
     bool _isDirty;
 };
 
-#endif // __CACHE_HH__
+#endif // __MEM_CACHE_CACHE_HH__

@@ -28,10 +28,11 @@
  * Authors: Steve Raasch
  */
 
+#include "cpu/func_unit.hh"
+
 #include <sstream>
 
-#include "base/misc.hh"
-#include "cpu/func_unit.hh"
+#include "base/logging.hh"
 
 using namespace std;
 
@@ -42,6 +43,8 @@ using namespace std;
 //
 FuncUnit::FuncUnit()
 {
+    opLatencies.fill(0);
+    pipelined.fill(false);
     capabilityList.reset();
 }
 

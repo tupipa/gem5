@@ -39,8 +39,9 @@
  *          Stephan Diestelhorst
  */
 
-#include "debug/EnergyCtrl.hh"
 #include "dev/arm/energy_ctrl.hh"
+
+#include "debug/EnergyCtrl.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "params/EnergyCtrl.hh"
@@ -53,7 +54,7 @@ EnergyCtrl::EnergyCtrl(const Params *p)
       domainIDIndexToRead(0),
       perfLevelAck(0),
       perfLevelToRead(0),
-      updateAckEvent(this)
+      updateAckEvent([this]{ updatePLAck(); }, name())
 {
     fatal_if(!p->dvfs_handler, "EnergyCtrl: Needs a DVFSHandler for a "
              "functioning system.\n");
@@ -216,7 +217,7 @@ EnergyCtrl::write(PacketPtr pkt)
 }
 
 void
-EnergyCtrl::serialize(std::ostream &os)
+EnergyCtrl::serialize(CheckpointOut &cp) const
 {
     SERIALIZE_SCALAR(domainID);
     SERIALIZE_SCALAR(domainIDIndexToRead);
@@ -228,7 +229,7 @@ EnergyCtrl::serialize(std::ostream &os)
 }
 
 void
-EnergyCtrl::unserialize(Checkpoint *cp, const std::string &section)
+EnergyCtrl::unserialize(CheckpointIn &cp)
 {
     UNSERIALIZE_SCALAR(domainID);
     UNSERIALIZE_SCALAR(domainIDIndexToRead);

@@ -39,14 +39,17 @@
  *          Stephan Diestelhorst
  */
 
+#include "sim/dvfs_handler.hh"
+
 #include <set>
 #include <utility>
 
-#include "base/misc.hh"
+#include "base/logging.hh"
+#include "base/trace.hh"
 #include "debug/DVFS.hh"
 #include "params/DVFSHandler.hh"
 #include "sim/clock_domain.hh"
-#include "sim/dvfs_handler.hh"
+#include "sim/eventq_impl.hh"
 #include "sim/stat_control.hh"
 #include "sim/voltage_domain.hh"
 
@@ -63,7 +66,7 @@ DVFSHandler::DVFSHandler(const Params *p)
 {
     // Check supplied list of domains for sanity and add them to the
     // domain ID -> domain* hash
-    for(auto dit = p->domains.begin(); dit != p->domains.end(); ++dit) {
+    for (auto dit = p->domains.begin(); dit != p->domains.end(); ++dit) {
         SrcClockDomain *d = *dit;
         DomainID domain_id = d->domainID();
 
@@ -169,8 +172,32 @@ DVFSHandler::UpdateEvent::updatePerfLevel()
     d->perfLevel(perfLevelToSet);
 }
 
+double
+DVFSHandler::voltageAtPerfLevel(DomainID domain_id, PerfLevel perf_level) const
+{
+    VoltageDomain *d = findDomain(domain_id)->voltageDomain();
+    assert(d);
+    PerfLevel n = d->numVoltages();
+    if (perf_level < n)
+        return d->voltage(perf_level);
+
+    // Request outside of the range of the voltage domain
+    if (n == 1) {
+        DPRINTF(DVFS, "DVFS: Request for perf-level %i for single-point "\
+                "voltage domain %s.  Returning voltage at level 0: %.2f "\
+                "V\n", perf_level, d->name(), d->voltage(0));
+        // Special case for single point voltage domain -> same voltage for
+        // all points
+        return d->voltage(0);
+    }
+
+    warn("DVFSHandler %s reads illegal voltage level %u from "\
+         "VoltageDomain %s. Returning 0 V\n", name(), perf_level, d->name());
+    return 0.;
+}
+
 void
-DVFSHandler::serialize(std::ostream &os)
+DVFSHandler::serialize(CheckpointOut &cp) const
 {
     //This is to ensure that the handler status is maintained during the
     //entire simulation run and not changed from command line during checkpoint
@@ -182,29 +209,28 @@ DVFSHandler::serialize(std::ostream &os)
     std::vector<DomainID> domain_ids;
     std::vector<PerfLevel> perf_levels;
     std::vector<Tick> whens;
-    for (auto it = updatePerfLevelEvents.begin();
-         it != updatePerfLevelEvents.end(); ++it) {
-        DomainID id = it->first;
-        UpdateEvent *event = &it->second;
+    for (const auto &ev_pair : updatePerfLevelEvents) {
+        DomainID id = ev_pair.first;
+        const UpdateEvent *event = &ev_pair.second;
 
         assert(id == event->domainIDToSet);
         domain_ids.push_back(id);
         perf_levels.push_back(event->perfLevelToSet);
         whens.push_back(event->scheduled() ? event->when() : 0);
     }
-    arrayParamOut(os, "domain_ids", domain_ids);
-    arrayParamOut(os, "perf_levels", perf_levels);
-    arrayParamOut(os, "whens", whens);
+    SERIALIZE_CONTAINER(domain_ids);
+    SERIALIZE_CONTAINER(perf_levels);
+    SERIALIZE_CONTAINER(whens);
 }
 
 void
-DVFSHandler::unserialize(Checkpoint *cp, const std::string &section)
+DVFSHandler::unserialize(CheckpointIn &cp)
 {
     bool temp = enableHandler;
 
     UNSERIALIZE_SCALAR(enableHandler);
 
-    if(temp != enableHandler) {
+    if (temp != enableHandler) {
         warn("DVFS: Forcing enable handler status to unserialized value of %d",
              enableHandler);
     }
@@ -213,9 +239,9 @@ DVFSHandler::unserialize(Checkpoint *cp, const std::string &section)
     std::vector<DomainID> domain_ids;
     std::vector<PerfLevel> perf_levels;
     std::vector<Tick> whens;
-    arrayParamIn(cp, section, "domain_ids", domain_ids);
-    arrayParamIn(cp, section, "perf_levels", perf_levels);
-    arrayParamIn(cp, section, "whens", whens);
+    UNSERIALIZE_CONTAINER(domain_ids);
+    UNSERIALIZE_CONTAINER(perf_levels);
+    UNSERIALIZE_CONTAINER(whens);
 
     for (size_t i = 0; i < domain_ids.size(); ++i) {;
         UpdateEvent *event = &updatePerfLevelEvents[domain_ids[i]];
