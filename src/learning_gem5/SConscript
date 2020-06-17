@@ -4,4 +4,14 @@ Import('*')
 SimObject('HelloObject2.py')
 Source('hello_object2.cc')
 
+# A debug flag for HelloObject2
+# This declaration will direct the build system to automatically
+# generate a debug header file, which lives in the `debug` dir and have
+# the same file name as declared here.
+# For example, this declaration will generate header file that can be included:
+# // #include "debug/Hello2.hh"
+# in the hello_object2.cc
+
+DebugFlag('Hello2')
+
 

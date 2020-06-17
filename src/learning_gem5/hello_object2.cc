@@ -3,11 +3,15 @@
 
 #include <iostream>
 
+#include "debug/Hello2.hh"
+
 HelloObject2::HelloObject2(HelloObject2Params *params):
     SimObject(params)
 {
     // Normally, you should use debug flags in gem5, instead of `std:count`
     std::cout << "Hello World! From a SimObject" << std::endl;
+    DPRINTF(Hello2, "Creating the hello object\n");
+
 }
 
 
