@@ -17,8 +17,21 @@
 import m5
 
 from m5.objects import *
-
 from caches import *
+from optparse import OptionParser
+
+#################################
+# Options from command line
+#
+################################
+
+parser = OptionParser()
+parser.add_option('--l1i_size', help="L1 instruction cache size")
+parser.add_option('--l1d_size', help="L1 data cache size")
+parser.add_option('--l2_size', help="Unified L2 cache size")
+
+(options, args) = parser.parse_args()
+
 
 ####################################
 #  System Hardware Configuration
@@ -49,8 +62,8 @@ system.mem_ranges = [AddrRange('512MB')]
 system.cpu = TimingSimpleCPU()
 
 # L1 Cache
-system.cpu.icache = L1ICache()
-system.cpu.dcache = L1DCache()
+system.cpu.icache = L1ICache(options)
+system.cpu.dcache = L1DCache(options)
 
 # L1 -- CPU
 system.cpu.icache.connectCPU(system.cpu)
@@ -62,7 +75,7 @@ system.cpu.icache.connectBus(system.l2bus)
 system.cpu.dcache.connectBus(system.l2bus)
 
 # L2 Cache
-system.l2cache = L2Cache()
+system.l2cache = L2Cache(options)
 
 # L2 -- L2 bus
 system.l2cache.connectCPUSideBus(system.l2bus)
