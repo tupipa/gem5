@@ -1,0 +1,7 @@
+
+Import('*')
+
+SimObject('HelloObject2.py')
+Source('hello_object2.cc')
+
+
