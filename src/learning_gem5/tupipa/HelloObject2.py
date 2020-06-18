@@ -19,7 +19,7 @@ class HelloObject2(SimObject):
     # Again, convention suggests to use same file name as the class name but
     # with all lower cases.
     # This header file needs to be manually implemented in C++
-    cxx_header = "learning_gem5/hello_object2.hh"
+    cxx_header = "learning_gem5/tupipa/hello_object2.hh"
 
 
     ###################################################################

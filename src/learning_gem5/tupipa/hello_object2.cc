@@ -1,5 +1,5 @@
 
-#include "learning_gem5/hello_object2.hh"
+#include "learning_gem5/tupipa/hello_object2.hh"
 
 #include <iostream>
 
