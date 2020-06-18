@@ -15,9 +15,9 @@ HelloObject2::HelloObject2(HelloObject2Params *params):
     // The name is usually the name of SimObject that owns this event
     event([this]{processEvent();},name()),
     // default latency value, the tick when the event is going to be triggered
-    latency(10),
+    latency(params->time_to_wait),
     // default number of times for the event being triggered
-    timesLeft(22)
+    timesLeft(params->number_of_fires)
 {
     // Normally, you should use debug flags in gem5, instead of `std:count`
     std::cout << "Hello World! From a SimObject" << std::endl;

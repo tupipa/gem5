@@ -20,7 +20,8 @@ print("Initiate the HelloObject2")
 # This will call the python constructor
 # This instantiation needs to be the child of the root
 root.hello2 = HelloObject2()
-
+root.hello2.time_to_wait = '1ns'
+root.hello2.number_of_fires = 23
 
 print("Instantiate the m5 module")
 m5.instantiate()

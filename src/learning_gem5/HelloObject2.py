@@ -22,5 +22,28 @@ class HelloObject2(SimObject):
     cxx_header = "learning_gem5/hello_object2.hh"
 
 
+    ###################################################################
+    #
+    # Parameters that can be send from Python to C++
+    #
+    #     Param.<TypeName>([default],"description")
+    #
+    # - TypeName are like regular Python classes. They can be
+    #   - Int, Float
+    #   - Latency: takes a string as time and convert it into simulator ticks
+    #           e.g. 1ns is converted to 1000 ticks under 1THz
+    #   - Percent, Cycles, MemorySize, ...
+    #
+    # - Each parameter declaration take one or two parameters:
+    #   - default value, optional
+    #   - a short description of the parameter
+    #
+    ##################################################################
+
+    time_to_wait = Param.Latency("Time before firing the event")
+
+    number_of_fires = Param.Int(1, "Number of time to fire the event before "
+                                   "goodbye")
+
 
 
