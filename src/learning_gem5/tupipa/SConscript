@@ -16,9 +16,9 @@ DebugFlag('Hello2')
 
 # SConscript for SimpleMemobj2
 
-SimObject('SimpleMemobj2.py')
-Source('simple_memobj2.cc')
+#SimObject('SimpleMemobj2.py')
+#Source('simple_memobj2.cc')
 
-DebugFlag("SimpleMemobj2")
+#DebugFlag("SimpleMemobj2")
 
 
