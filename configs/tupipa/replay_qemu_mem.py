@@ -112,6 +112,7 @@ system.clk_domain = SrcClockDomain(clock = '2.0GHz',
                                    VoltageDomain(voltage = '1V'))
 
 mem_range = AddrRange(options.mem_size)
+print("Mem Range: ", int(mem_range.end))
 system.mem_ranges = [mem_range]
 
 # do not worry about reserving space for the backing store
@@ -155,15 +156,16 @@ max_range = int(mem_range.end)
 
 # start at a size of 4 kByte, and go up till we hit the max, increase
 # the step every time we hit a power of two
-min_range = 4096
-ranges = [min_range]
-step = 1024
+# min_range = 4096
+# Lele: keep only one range
+ranges = [max_range]
+#step = 1024
 
-while ranges[-1] < max_range:
-    new_range = ranges[-1] + step
-    if is_pow2(new_range):
-        step *= 2
-    ranges.append(new_range)
+#while ranges[-1] < max_range:
+#    new_range = ranges[-1] + step
+#    if is_pow2(new_range):
+#        step *= 2
+#    ranges.append(new_range)
 
 # how many times to repeat the measurement for each data point
 iterations = 2
@@ -172,6 +174,9 @@ iterations = 2
 # do not pile up in the system, adjust if needed
 itt = 150 * 1000
 
+# TODO: read trace from qemu-generated tracing data and write to
+# traffic_gen compatitble format
+#
 # for every data point, we create a trace containing a random address
 # sequence, so that we can play back the same sequence for warming and
 # the actual measurement
@@ -223,7 +228,7 @@ nxt_range = 0
 nxt_state = 0
 period = long(itt * (max_range / burst_size))
 
-# now we create the states for each range
+# TODO now we create the states for the input file only
 for r in ranges:
     filename = os.path.join(m5.options.outdir,
                             'lat_mem_rd%d.trc.gz' % nxt_range)
