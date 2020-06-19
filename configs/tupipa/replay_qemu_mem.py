@@ -1,6 +1,8 @@
 # Copyright (c) 2015-2016 ARM Limited
 # All rights reserved.
 #
+# Lele Ma, 2020-06-19
+#
 # The license below extends only to copyright in the software and shall
 # not be construed as granting a license to any other intellectual
 # property including but not limited to intellectual property relating
@@ -68,7 +70,7 @@ try:
 except:
     print("Did not find packet proto definitions, attempting to generate")
     from subprocess import call
-    error = call(['protoc', '--python_out=configs/dram',
+    error = call(['protoc', '--python_out=configs/tupipa',
                   '--proto_path=src/proto', 'src/proto/packet.proto'])
     if not error:
         print("Generated packet proto definitions")
@@ -175,6 +177,7 @@ itt = 150 * 1000
 # the actual measurement
 def create_trace(filename, max_addr, burst_size, itt):
     try:
+        print("Trying to open file ", filename)
         proto_out = gzip.open(filename, 'wb')
     except IOError:
         print("Failed to open ", filename, " for writing")
