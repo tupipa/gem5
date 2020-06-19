@@ -56,7 +56,7 @@ EventQueue::schedule(Event *event, Tick when, bool global)
     }
     event->flags.set(Event::Scheduled);
     event->acquire();
-
+    DPRINF(Event, "Event acquired\n")
     if (DTRACE(Event))
         event->trace("scheduled");
 }
