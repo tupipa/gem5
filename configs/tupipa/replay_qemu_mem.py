@@ -280,7 +280,7 @@ system.tgen.port = system.monitor.slave
 # basic to explore some of the options
 from common.Caches import *
 
-##############################
+##########################################################################
 ## Define a TagController
 #
 #  L1 -- L2 -- TagController -- Memory
@@ -294,9 +294,16 @@ from common.Caches import *
 #                  |-> tag request ->|  tag cache    |
 #                                    |-> tag req   ->|
 #
-#
-class TagController():
-    def __init__(self, )
+##########################################################################
+class TagCache(Cache):
+    assoc = 16
+    tag_latency = 20
+    data_latency = 20
+    sequential_access = True
+    response_latency = 40
+    mshrs = 32
+    tgts_per_mshr = 12
+    write_buffers = 16
 
 # a starting point for an L3 cache
 class L3Cache(Cache):
@@ -317,19 +324,45 @@ system.l1cache = L1_DCache(size = '64kB')
 system.monitor.master = system.l1cache.cpu_side
 
 system.l2cache = L2Cache(size = '512kB', writeback_clean = True)
-system.l2cache.xbar = L2XBar()
 
-# L1 cache.mem_side (master) --> l2cache.xbar.slave --> l2 cache (slave)
+# Connect L1 -- xbar -- L2
+# L1 cache.mem_side (master) --> (slave) l2cache.xbar (master) -- L2.cpu_side
+system.l2cache.xbar = L2XBar()
 system.l1cache.mem_side = system.l2cache.xbar.slave
 system.l2cache.cpu_side = system.l2cache.xbar.master
 
-# make the L3 mostly exclusive, and correspondingly ensure that the L2
-# writes back also clean lines to the L3
-system.l3cache = L3Cache(size = '4MB', clusivity = 'mostly_excl')
-system.l3cache.xbar = L2XBar()
-system.l2cache.mem_side = system.l3cache.xbar.slave
-system.l3cache.cpu_side = system.l3cache.xbar.master
-system.l3cache.mem_side = system.membus.slave
+# Create Last Level Cache
+# Lele: for last Level Cache: either use a regular L3 or a tagController
+if (options.enable-shadow-tags):
+    print ("Using Tag Controller as Last Level Cache...")
+    tag_controller = TagController()
+
+    # Tag Cache that lives in the TagController
+    tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
+    tag_controller.tag_cache = tag_cache
+
+    # L2 -- xbar -- TagController
+    # bus between L2 and tag_controller
+    tag_controller.xbar = L2XBar()
+    system.l2cache.mem_side = tag_controller.xbar.slave
+    tag_controller.data_port = tag_controller.xbar.master
+
+    # TagController -- Memory bus
+    # connection between tag_controller and memory bus
+    # see learning_gem5/part1/caches.py:connectBus()
+    tag_controller.mem_side_data = system.membus.slave
+    tag_controller.mem_side_tag = system.membus.slave
+
+    system.tag_controller = tag_controller
+else
+    print ("Using regular L3 Cache without Tag Cache...")
+    # make the L3 mostly exclusive, and correspondingly ensure that the L2
+    # writes back also clean lines to the L3
+    system.l3cache = L3Cache(size = '4MB', clusivity = 'mostly_excl')
+    system.l3cache.xbar = L2XBar()
+    system.l2cache.mem_side = system.l3cache.xbar.slave
+    system.l3cache.cpu_side = system.l3cache.xbar.master
+    system.l3cache.mem_side = system.membus.slave
 
 # connect the system port even if it is not used in this example
 system.system_port = system.membus.slave
