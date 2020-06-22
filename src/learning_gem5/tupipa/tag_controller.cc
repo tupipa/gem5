@@ -26,21 +26,34 @@ One cpu side port, and two memside port.
 #
  */
 
+#include "learning_gem5/tupipa/tag_controller.hh"
+
 #include "debug/TagController.hh"
-#include "learning_gem5/part2/simple_memobj.hh"
 
 TagController::TagController(TagControllerParams *params) :
     SimObject(params),
+    tagCache(params->tag_cache),
     dataPort(params->name + ".data_port", this),
     memDataPort(params->name + ".mem_side_data", this),
     memTagPort(params->name + ".mem_side_tag", this),
-    tagCache(params->name + ".tag_cache", this),
     blocked(false)
 {
     //Lele: connect the tag cache port with memory bus
     // memTagPort = tagCache.slave
 
  }
+
+#define MOST_SIG_BIT (1UL<<63)
+
+bool
+TagController::isTagAddr(Addr addr){
+   // if most sig bit is one, then data memory
+   if (addr & MOST_SIG_BIT){
+       return false;
+   }
+   // if most sig bit is 0, then tag table.
+   return true;
+}
 
 Port &
 TagController::getPort(const std::string &if_name, PortID idx)
@@ -261,7 +274,7 @@ void
 TagController::handleFunctional(PacketPtr pkt)
 {
     // Just pass this on to the memory side to handle for now.
-    memPort.sendFunctional(pkt);
+    memDataPort.sendFunctional(pkt);
 }
 
 AddrRangeList
@@ -269,13 +282,13 @@ TagController::getAddrRanges() const
 {
     DPRINTF(TagController, "Sending new ranges\n");
     // Just use the same ranges as whatever is on the memory side.
-    return memPort.getAddrRanges();
+    return memDataPort.getAddrRanges();
 }
 
 void
 TagController::sendRangeChange()
 {
-    instPort.sendRangeChange();
+    //instPort.sendRangeChange();
     dataPort.sendRangeChange();
 }
 

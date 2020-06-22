@@ -196,8 +196,13 @@ class TagController : public SimObject
      */
     void sendRangeChange();
 
+    /**
+     * Check whether the address stores tag or data
+     */
+    bool isTagAddr(Addr addr);
+
     /// Instantiation of the tagCache
-    Cache tagCache;
+    Cache *tagCache;
 
     /// Instantiation of the CPU-side ports
     CPUSidePort dataPort;
