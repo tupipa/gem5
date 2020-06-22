@@ -333,13 +333,14 @@ system.l2cache.cpu_side = system.l2cache.xbar.master
 
 # Create Last Level Cache
 # Lele: for last Level Cache: either use a regular L3 or a tagController
-if (options.enable-shadow-tags):
+if (options.enable_shadow_tags):
     print ("Using Tag Controller as Last Level Cache...")
     tag_controller = TagController()
 
     # Tag Cache that lives in the TagController
     tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
     tag_controller.tag_cache = tag_cache
+
 
     # L2 -- xbar -- TagController
     # bus between L2 and tag_controller
@@ -353,8 +354,17 @@ if (options.enable-shadow-tags):
     tag_controller.mem_side_data = system.membus.slave
     tag_controller.mem_side_tag = system.membus.slave
 
-    system.tag_controller = tag_controller
-else
+    ## Inside TagController:
+    # data_port --- xbar -- tag_cache.cpu_side
+    # tag_cache.mem_side -- mem_side_tag
+    tag_cache.xbar = L2XBar()
+    tag_controller.xbar.master = tag_cache.xbar.slave
+    tag_cache.cpu_side = tag_cache.xbar.master
+
+    tag_cache.mem_side = system.membus.slave
+
+    system.l3cache = tag_controller
+else:
     print ("Using regular L3 Cache without Tag Cache...")
     # make the L3 mostly exclusive, and correspondingly ensure that the L2
     # writes back also clean lines to the L3
