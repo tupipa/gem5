@@ -1,6 +1,6 @@
-/**
+/******************************************************************
 
-Lele Ma, a tag controller similar to CHERI's implementation:
+Lele Ma, a tag controller sits between L2 and Memory:
 
 1. forwards all data request from l2 to memory, without processing
 
@@ -9,7 +9,7 @@ Lele Ma, a tag controller similar to CHERI's implementation:
 
 One cpu side port, and two memside port.
 
-##############################
+###########################################################################
 ## Define a TagController
 #
 #  L1 -- L2 -- TagController -- Memory
@@ -18,13 +18,13 @@ One cpu side port, and two memside port.
 #
 #  One input from L2; internal two path(tag + data); merged path to memory
 #
-# L2 -> request -> |  tag controller                 | --> Memory
-#               <- |-> data request forword -------->| <--
-#                  |-> tag request ->|  tag cache    |
-#                                    |-> tag req   ->|
+#  L2 -> request -> |  tag controller                 | --> Memory bus
+#                <- |-> data request forword -------->| <--
+#                   |-> tag request ->|  tag cache    |
+#                                     |-> tag req   ->|
 #
 #
- */
+***************************************************************************/
 
 #include "learning_gem5/tupipa/tag_controller.hh"
 

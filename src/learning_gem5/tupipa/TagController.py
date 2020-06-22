@@ -2,6 +2,36 @@
 from m5.params import *
 from m5.SimObject import SimObject
 
+
+###########################################################################
+#
+# Lele Ma, a tag controller sits between L2 and Memory:
+#
+# 1. forwards all data request from l2 to memory, without processing
+#
+# 2. each data request additionally generates a tag memory request to
+#   tag cache, and a tag cache miss will also send request to mem.
+#
+# One cpu side port, and two memside port.
+#
+###########################################################################
+#
+# Define a TagController
+#
+#  L1 -- L2 -- TagController -- Memory
+#
+#  TagController:
+#
+#  One input from L2; internal two path(tag + data); merged path to memory
+#
+#  L2 -> request -> |  tag controller                 | --> Memory bus
+#                <- |-> data request forword -------->| <--
+#                   |-> tag request ->|  tag cache    |
+#                                     |-> tag req   ->|
+#
+#
+
+
 class TagController(SimObject):
     type = 'TagController'
     cxx_header = "learning_gem5/tupipa/tag_controller.hh"
