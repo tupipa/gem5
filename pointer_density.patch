@@ -1,0 +1,891 @@
+diff --git a/.gitignore b/.gitignore
+deleted file mode 100644
+index c9b568f7e..000000000
+--- a/.gitignore
++++ /dev/null
+@@ -1,2 +0,0 @@
+-*.pyc
+-*.swp
+diff --git a/configs/common/CacheConfig.py b/configs/common/CacheConfig.py
+index 6181793e5..899090af5 100644
+--- a/configs/common/CacheConfig.py
++++ b/configs/common/CacheConfig.py
+@@ -63,41 +63,23 @@ def config_cache(options, system):
+         dcache_class, icache_class, l2_cache_class = \
+             O3_ARM_v7a_DCache, O3_ARM_v7a_ICache, O3_ARM_v7aL2
+     else:
+-        dcache_class, icache_class, l2_cache_class, l3_cache_class = \
+-            L1Cache, L1Cache, L2Cache, L3Cache
++        dcache_class, icache_class, l2_cache_class = \
++            L1Cache, L1Cache, L2Cache
+ 
+     # Set the cache line size of the system
+     system.cache_line_size = options.cacheline_size
+ 
+-    mem_port = system.membus.slave
+-    if options.l3cache:
+-        # Provide a clock for the l3 and the L1-to-l3 bus here as they
+-        # are not connected using addTwoLevelCacheHierarchy. Use the
+-        # same clock as the CPUs.
+-        system.l3 = l3_cache_class(clk_domain=system.cpu_clk_domain,
+-                                   size=options.l3_size,
+-                                   assoc=options.l3_assoc)
+-
+-        system.l3.mem_side = mem_port
+-        mem_port = system.l3.cpu_side
+-
+     if options.l2cache:
+         # Provide a clock for the L2 and the L1-to-L2 bus here as they
+         # are not connected using addTwoLevelCacheHierarchy. Use the
+         # same clock as the CPUs.
+-        if options.l2_prefetcher == "stride":
+-            prefetcher_set = StridePrefetcher()
+-        else:
+-            raise Exception("Unknown prefetcher: " + options.l2_prefetcher)
+         system.l2 = l2_cache_class(clk_domain=system.cpu_clk_domain,
+                                    size=options.l2_size,
+-                                   assoc=options.l2_assoc,
+-                                   prefetcher=prefetcher_set,
+-                                   prefetch_on_access=options.l2_prefetch_on_access)
++                                   assoc=options.l2_assoc)
+ 
+         system.tol2bus = L2XBar(clk_domain = system.cpu_clk_domain)
+         system.l2.cpu_side = system.tol2bus.master
+-        system.l2.mem_side = mem_port
++        system.l2.mem_side = system.membus.slave
+ 
+     if options.memchecker:
+         system.memchecker = MemChecker()
+diff --git a/configs/common/Caches.py b/configs/common/Caches.py
+index 9b8f21a2b..6687a967c 100644
+--- a/configs/common/Caches.py
++++ b/configs/common/Caches.py
+@@ -62,15 +62,6 @@ class L2Cache(BaseCache):
+     tgts_per_mshr = 12
+     write_buffers = 8
+ 
+-class L3Cache(BaseCache):
+-    assoc = 16
+-    hit_latency = 20
+-    response_latency = 20
+-    mshrs = 20
+-    tgts_per_mshr = 12
+-    write_buffers = 8
+-    size = '8MB'
+-
+ class IOCache(BaseCache):
+     assoc = 8
+     hit_latency = 50
+diff --git a/configs/common/MemConfig.py b/configs/common/MemConfig.py
+index 12246a7d7..cf0fb1632 100644
+--- a/configs/common/MemConfig.py
++++ b/configs/common/MemConfig.py
+@@ -194,16 +194,4 @@ def config_mem(options, system):
+ 
+     # Connect the controllers to the membus
+     for i in xrange(len(system.mem_ctrls)):
+-        #system.mem_ctrls[i].port = system.membus.master
+-        connectMemory(options, system.mem_ctrls[i], system.membus.master)
+-
+-# Note, slaveDevice should not include the port, e.g.
+-# subsystem.mem_ctrls[i] not subsystem.mem_ctrls[i].port
+-def connectMemory(options, slaveDevice, masterPort):
+-    from m5.objects import CommMonitor
+-    if options.monitor_memory:
+-        slaveDevice.monitor = CommMonitor(trace_enable=True, trace_compress=True, trace_file=options.monitor_memory_file)
+-        slaveDevice.port = slaveDevice.monitor.master
+-        slaveDevice.monitor.slave = masterPort
+-    else:
+-        slaveDevice.port = masterPort
++        system.mem_ctrls[i].port = system.membus.master
+diff --git a/configs/common/Options.py b/configs/common/Options.py
+index 047b11c54..35d453d24 100644
+--- a/configs/common/Options.py
++++ b/configs/common/Options.py
+@@ -108,7 +108,6 @@ def addCommonOptions(parser):
+                       help="use external ports of this port_type for caches")
+     parser.add_option("--caches", action="store_true")
+     parser.add_option("--l2cache", action="store_true")
+-    parser.add_option("--l3cache", action="store_true")
+     parser.add_option("--fastmem", action="store_true")
+     parser.add_option("--num-dirs", type="int", default=1)
+     parser.add_option("--num-l2caches", type="int", default=1)
+@@ -116,16 +115,12 @@ def addCommonOptions(parser):
+     parser.add_option("--l1d_size", type="string", default="64kB")
+     parser.add_option("--l1i_size", type="string", default="32kB")
+     parser.add_option("--l2_size", type="string", default="2MB")
+-    parser.add_option("--l2_prefetcher", type="string", default=NULL)
+-    parser.add_option("--l2_prefetch_on_access", action="store_true")
+     parser.add_option("--l3_size", type="string", default="16MB")
+     parser.add_option("--l1d_assoc", type="int", default=2)
+     parser.add_option("--l1i_assoc", type="int", default=2)
+     parser.add_option("--l2_assoc", type="int", default=8)
+     parser.add_option("--l3_assoc", type="int", default=16)
+     parser.add_option("--cacheline_size", type="int", default=64)
+-    parser.add_option("--monitor-memory", action="store_true")
+-    parser.add_option("--monitor-memory-file", type="string", default=None)
+ 
+     # Enable Ruby
+     parser.add_option("--ruby", action="store_true")
+@@ -274,9 +269,6 @@ def addFSOptions(parser):
+         parser.add_option("--enable-context-switch-stats-dump", \
+                 action="store_true", help="Enable stats dump at context "\
+                 "switches and dump tasks file (required for Streamline)")
+-        parser.add_option("--track-current-pid-tgid", \
+-                action="store_true", help="Track current PID and TGID across "\
+-                "context switches")
+ 
+     # Benchmark options
+     parser.add_option("--dual", action="store_true",
+diff --git a/configs/example/fs.py b/configs/example/fs.py
+index 12dc3d197..70a3b950e 100644
+--- a/configs/example/fs.py
++++ b/configs/example/fs.py
+@@ -102,8 +102,6 @@ def build_test_system(np):
+                                  external_memory=options.external_memory_system)
+         if options.enable_context_switch_stats_dump:
+             test_sys.enable_context_switch_stats_dump = True
+-        if options.track_current_pid_tgid:
+-            test_sys.track_current_pid_tgid = True
+     else:
+         fatal("Incapable of building %s full system!", buildEnv['TARGET_ISA'])
+ 
+diff --git a/src/arch/arm/ArmSystem.py b/src/arch/arm/ArmSystem.py
+index eb0b6a26c..b9769da4b 100644
+--- a/src/arch/arm/ArmSystem.py
++++ b/src/arch/arm/ArmSystem.py
+@@ -82,7 +82,6 @@ class GenericArmSystem(ArmSystem):
+     early_kernel_symbols = Param.Bool(False,
+         "enable early kernel symbol tables before MMU")
+     enable_context_switch_stats_dump = Param.Bool(False, "enable stats/task info dumping at context switch boundaries")
+-    track_current_pid_tgid = Param.Bool(False, "enable tracking of current PID and TGID across context switches")
+ 
+     panic_on_panic = Param.Bool(False, "Trigger a gem5 panic if the " \
+                                     "guest kernel panics")
+diff --git a/src/arch/arm/isa/formats/aarch64.isa b/src/arch/arm/isa/formats/aarch64.isa
+index 040c88dc7..b5a4dfa21 100644
+--- a/src/arch/arm/isa/formats/aarch64.isa
++++ b/src/arch/arm/isa/formats/aarch64.isa
+@@ -2011,7 +2011,6 @@ namespace Aarch64
+           case 0x54: return new M5panic(machInst);
+           case 0x5a: return new M5workbegin64(machInst);
+           case 0x5b: return new M5workend64(machInst);
+-          case 0x59: return new M5toggletracing(machInst);
+           default: return new Unknown64(machInst);
+         }
+     }
+diff --git a/src/arch/arm/isa/insts/m5ops.isa b/src/arch/arm/isa/insts/m5ops.isa
+index d82d0edc3..e18d0682c 100644
+--- a/src/arch/arm/isa/insts/m5ops.isa
++++ b/src/arch/arm/isa/insts/m5ops.isa
+@@ -508,18 +508,6 @@ let {{
+     decoder_output += BasicConstructor.subst(m5panicIop)
+     exec_output += PredOpExecute.subst(m5panicIop)
+ 
+-    m5toggletracingCode = '''
+-    PseudoInst::toggletracing(xc->tcBase());
+-    '''
+-    m5toggletracingIop = InstObjParams("m5toggletracing", "M5toggletracing",
+-        "PredOp",
+-        { "code": m5toggletracingCode,
+-          "predicate_test": predicateTest },
+-          ["IsNonSpeculative"])
+-    header_output += BasicDeclare.subst(m5toggletracingIop)
+-    decoder_output += BasicConstructor.subst(m5toggletracingIop)
+-    exec_output += PredOpExecute.subst(m5toggletracingIop)
+-
+     m5workbeginCode = '''PseudoInst::workbegin(
+                           xc->tcBase(),
+                           join32to64(R1, R0),
+diff --git a/src/arch/arm/linux/system.cc b/src/arch/arm/linux/system.cc
+index 49d2e5b6f..f6df6307a 100644
+--- a/src/arch/arm/linux/system.cc
++++ b/src/arch/arm/linux/system.cc
+@@ -63,7 +63,6 @@ using namespace Linux;
+ LinuxArmSystem::LinuxArmSystem(Params *p)
+     : GenericArmSystem(p), dumpStatsPCEvent(nullptr),
+       enableContextSwitchStatsDump(p->enable_context_switch_stats_dump),
+-      trackCurrentPidTgid(p->track_current_pid_tgid),
+       taskFile(nullptr), kernelPanicEvent(nullptr), kernelOopsEvent(nullptr)
+ {
+     if (p->panic_on_panic) {
+@@ -231,22 +230,13 @@ LinuxArmSystemParams::create()
+ void
+ LinuxArmSystem::startup()
+ {
+-    if (enableContextSwitchStatsDump || trackCurrentPidTgid) {
+-        if (!highestELIs64()) {
+-            dumpStatsPCEvent =
+-                addKernelFuncEvent<DumpStatsPCEvent>("__switch_to");
+-        } else {
+-            dumpStatsPCEvent =
+-                addKernelFuncEvent<DumpStatsPCEvent64>("__switch_to");
+-        }
+-
++    if (enableContextSwitchStatsDump) {
++        dumpStatsPCEvent = addKernelFuncEvent<DumpStatsPCEvent>("__switch_to");
+         if (!dumpStatsPCEvent)
+            panic("dumpStatsPCEvent not created!");
+ 
+-        if (enableContextSwitchStatsDump) {
+-            std::string task_filename = "tasks.txt";
+-            taskFile = simout.create(name() + "." + task_filename);
+-        }
++        std::string task_filename = "tasks.txt";
++        taskFile = simout.create(name() + "." + task_filename);
+ 
+         for (int i = 0; i < _numContexts; i++) {
+             ThreadContext *tc = threadContexts[i];
+@@ -275,64 +265,25 @@ LinuxArmSystem::mapPid(ThreadContext *tc, uint32_t pid)
+     }
+ }
+ 
+-/**
+- * Extracts the information used by the DumpStatsPCEvent by reading the
+- * thread_info pointer passed to __switch_to() in 32 bit ARM Linux
++/** This function is called whenever the the kernel function
++ *  "__switch_to" is called to change running tasks.
+  *
+  *  r0 = task_struct of the previously running process
+- *  r1 = thread_info of the previously running process
+- *  r2 = thread_info of the next process to run
++ *  r1 = task_info of the previously running process
++ *  r2 = task_info of the next process to run
+  */
+ void
+-DumpStatsPCEvent::getTaskDetails(ThreadContext *tc, uint32_t &pid,
+-    uint32_t &tgid, std::string &next_task_str, int32_t &mm) {
+-
++DumpStatsPCEvent::process(ThreadContext *tc)
++{
+     Linux::ThreadInfo ti(tc);
+     Addr task_descriptor = tc->readIntReg(2);
+-    pid = ti.curTaskPID(task_descriptor);
+-    tgid = ti.curTaskTGID(task_descriptor);
+-    next_task_str = ti.curTaskName(task_descriptor);
++    uint32_t pid = ti.curTaskPID(task_descriptor);
++    uint32_t tgid = ti.curTaskTGID(task_descriptor);
++    std::string next_task_str = ti.curTaskName(task_descriptor);
+ 
+     // Streamline treats pid == -1 as the kernel process.
+     // Also pid == 0 implies idle process (except during Linux boot)
+-    mm = ti.curTaskMm(task_descriptor);
+-}
+-
+-/**
+- * Extracts the information used by the DumpStatsPCEvent64 by reading the
+- * task_struct pointer passed to __switch_to() in 64 bit ARM Linux
+- *
+- *  r0 = task_struct of the previously running process
+- *  r1 = task_struct of next process to run
+- */
+-void
+-DumpStatsPCEvent64::getTaskDetails(ThreadContext *tc, uint32_t &pid,
+-    uint32_t &tgid, std::string &next_task_str, int32_t &mm) {
+-
+-    Linux::ThreadInfo ti(tc);
+-    Addr task_struct = tc->readIntReg(1);
+-    pid = ti.curTaskPIDFromTaskStruct(task_struct);
+-    tgid = ti.curTaskTGIDFromTaskStruct(task_struct);
+-    next_task_str = ti.curTaskNameFromTaskStruct(task_struct);
+-
+-    // Streamline treats pid == -1 as the kernel process.
+-    // Also pid == 0 implies idle process (except during Linux boot)
+-    mm = ti.curTaskMmFromTaskStruct(task_struct);
+-}
+-
+-/** This function is called whenever the the kernel function
+- *  "__switch_to" is called to change running tasks.
+- */
+-void
+-DumpStatsPCEvent::process(ThreadContext *tc)
+-{
+-    uint32_t pid = 0;
+-    uint32_t tgid = 0;
+-    std::string next_task_str;
+-    int32_t mm = 0;
+-
+-    getTaskDetails(tc, pid, tgid, next_task_str, mm);
+-
++    int32_t mm = ti.curTaskMm(task_descriptor);
+     bool is_kernel = (mm == 0);
+     if (is_kernel && (pid != 0)) {
+         pid = -1;
+@@ -352,21 +303,18 @@ DumpStatsPCEvent::process(ThreadContext *tc)
+     // Set cpu task id, output process info, and dump stats
+     tc->getCpuPtr()->taskId(taskMap[pid]);
+     tc->getCpuPtr()->setPid(pid);
+-    tc->getCpuPtr()->setTgid(tgid);
+ 
+-    if (sys->enableContextSwitchStatsDump) {
+-        std::ostream* taskFile = sys->taskFile;
++    std::ostream* taskFile = sys->taskFile;
+ 
+-        // Task file is read by cache occupancy plotting script or
+-        // Streamline conversion script.
+-        ccprintf(*taskFile,
+-                 "tick=%lld %d cpu_id=%d next_pid=%d next_tgid=%d next_task=%s\n",
+-                 curTick(), taskMap[pid], tc->cpuId(), (int) pid, (int) tgid,
+-                 next_task_str);
+-        taskFile->flush();
++    // Task file is read by cache occupancy plotting script or
++    // Streamline conversion script.
++    ccprintf(*taskFile,
++             "tick=%lld %d cpu_id=%d next_pid=%d next_tgid=%d next_task=%s\n",
++             curTick(), taskMap[pid], tc->cpuId(), (int) pid, (int) tgid,
++             next_task_str);
++    taskFile->flush();
+ 
+-        // Dump and reset statistics
+-        Stats::schedStatEvent(true, true, curTick(), 0);
+-    }
++    // Dump and reset statistics
++    Stats::schedStatEvent(true, true, curTick(), 0);
+ }
+ 
+diff --git a/src/arch/arm/linux/system.hh b/src/arch/arm/linux/system.hh
+index ee025172e..388c1e70a 100644
+--- a/src/arch/arm/linux/system.hh
++++ b/src/arch/arm/linux/system.hh
+@@ -74,12 +74,6 @@ class LinuxArmSystem : public GenericArmSystem
+      *  Streamline and per-thread cache occupancy studies, etc. */
+     bool enableContextSwitchStatsDump;
+ 
+-    /** When enabled, track the current PID and TGID across context switches.
+-     * Useful for when we want to output these during instruction tracing. It
+-     * means that we pay the cost once per context switch rather than on every
+-     * instruction! */
+-    bool trackCurrentPidTgid;
+-
+     /** This map stores a mapping of OS process IDs to internal Task IDs. The
+      * mapping is done because the stats system doesn't tend to like vectors
+      * that are much greater than 1000 items and the entire process space is
+@@ -132,20 +126,6 @@ class DumpStatsPCEvent : public PCEvent
+     {}
+ 
+     virtual void process(ThreadContext* tc);
+-  protected:
+-    virtual void getTaskDetails(ThreadContext *tc, uint32_t &pid,
+-            uint32_t &tgid, std::string &next_task_str, int32_t &mm);
+-
+-};
+-
+-class DumpStatsPCEvent64 : public DumpStatsPCEvent {
+-  public:
+-    DumpStatsPCEvent64(PCEventQueue *q, const std::string &desc, Addr addr)
+-        : DumpStatsPCEvent(q, desc, addr)
+-    {}
+-  private:
+-    void getTaskDetails(ThreadContext *tc, uint32_t &pid, uint32_t &tgid,
+-                        std::string &next_task_str, int32_t &mm) override;
+ };
+ 
+ 
+diff --git a/src/arch/arm/tlb.cc b/src/arch/arm/tlb.cc
+index 3bb1a4957..9a706a166 100644
+--- a/src/arch/arm/tlb.cc
++++ b/src/arch/arm/tlb.cc
+@@ -62,7 +62,6 @@
+ #include "cpu/thread_context.hh"
+ #include "debug/Checkpoint.hh"
+ #include "debug/TLB.hh"
+-#include "debug/TLBMiss.hh"
+ #include "debug/TLBVerbose.hh"
+ #include "mem/page_table.hh"
+ #include "params/ArmTLB.hh"
+@@ -1355,8 +1354,6 @@ TLB::getTE(TlbEntry **te, RequestPtr req, ThreadContext *tc, Mode mode,
+         // re-retreaving in table walker for speed
+         DPRINTF(TLB, "TLB Miss: Starting hardware table walker for %#x(%d:%d)\n",
+                 vaddr_tainted, asid, vmid);
+-        DPRINTF(TLBMiss, "TLB Miss: Starting hardware table walker for %#x(%d:%d)\n",
+-                vaddr_tainted, asid, vmid);
+         Fault fault;
+         fault = tableWalker->walk(req, tc, asid, vmid, isHyp, mode,
+                                   translation, timing, functional, is_secure,
+diff --git a/src/arch/generic/SConscript b/src/arch/generic/SConscript
+index 3d59cc6f0..c87ad671f 100644
+--- a/src/arch/generic/SConscript
++++ b/src/arch/generic/SConscript
+@@ -38,5 +38,4 @@ Source('tlb.cc')
+ SimObject('BaseTLB.py')
+ 
+ DebugFlag('TLB')
+-DebugFlag('TLBMiss')
+ Source('pseudo_inst.cc')
+diff --git a/src/arch/generic/linux/threadinfo.hh b/src/arch/generic/linux/threadinfo.hh
+index 89db36a30..6a5d031fa 100644
+--- a/src/arch/generic/linux/threadinfo.hh
++++ b/src/arch/generic/linux/threadinfo.hh
+@@ -95,9 +95,6 @@ class ThreadInfo
+     inline Addr
+     curTaskInfo(Addr thread_info = 0)
+     {
+-        // Note that in Linux 4.10 the thread_info struct will no longer have a
+-        // pointer to the task_struct for arm64. See:
+-        // https://patchwork.kernel.org/patch/9333699/
+         int32_t offset;
+         if (!get_data("thread_info_task", offset))
+             return 0;
+@@ -112,44 +109,33 @@ class ThreadInfo
+     }
+ 
+     int32_t
+-    curTaskPIDFromTaskStruct(Addr task_struct) {
++    curTaskPID(Addr thread_info = 0)
++    {
+         int32_t offset;
+         if (!get_data("task_struct_pid", offset))
+             return -1;
+ 
+         int32_t pid;
+-        CopyOut(tc, &pid, task_struct + offset, sizeof(pid));
++        CopyOut(tc, &pid, curTaskInfo(thread_info) + offset, sizeof(pid));
+ 
+         return pid;
+     }
+ 
+     int32_t
+-    curTaskPID(Addr thread_info = 0)
+-    {
+-        return curTaskPIDFromTaskStruct(curTaskInfo(thread_info));
+-    }
+-
+-    int32_t
+-    curTaskTGIDFromTaskStruct(Addr task_struct)
++    curTaskTGID(Addr thread_info = 0)
+     {
+         int32_t offset;
+         if (!get_data("task_struct_tgid", offset))
+             return -1;
+ 
+         int32_t tgid;
+-        CopyOut(tc, &tgid, task_struct + offset, sizeof(tgid));
++        CopyOut(tc, &tgid, curTaskInfo(thread_info) + offset, sizeof(tgid));
+ 
+         return tgid;
+     }
+ 
+-    int32_t
+-    curTaskTGID(Addr thread_info = 0)
+-    {
+-        return curTaskTGIDFromTaskStruct(curTaskInfo(thread_info));
+-    }
+-
+     int64_t
+-    curTaskStartFromTaskStruct(Addr task_struct)
++    curTaskStart(Addr thread_info = 0)
+     {
+         int32_t offset;
+         if (!get_data("task_struct_start_time", offset))
+@@ -158,19 +144,13 @@ class ThreadInfo
+         int64_t data;
+         // start_time is actually of type timespec, but if we just
+         // grab the first long, we'll get the seconds out of it
+-        CopyOut(tc, &data, task_struct + offset, sizeof(data));
++        CopyOut(tc, &data, curTaskInfo(thread_info) + offset, sizeof(data));
+ 
+         return data;
+     }
+ 
+-    int64_t
+-    curTaskStart(Addr thread_info = 0)
+-    {
+-        return curTaskStartFromTaskStruct(curTaskInfo(thread_info));
+-    }
+-
+     std::string
+-    curTaskNameFromTaskStruct(Addr task_struct)
++    curTaskName(Addr thread_info = 0)
+     {
+         int32_t offset;
+         int32_t size;
+@@ -182,35 +162,23 @@ class ThreadInfo
+             return "FailureIn_curTaskName";
+ 
+         char buffer[size + 1];
+-        CopyStringOut(tc, buffer, task_struct + offset, size);
++        CopyStringOut(tc, buffer, curTaskInfo(thread_info) + offset, size);
+ 
+         return buffer;
+     }
+ 
+-    std::string
+-    curTaskName(Addr thread_info = 0)
+-    {
+-        return curTaskNameFromTaskStruct(curTaskInfo(thread_info));
+-    }
+-
+     int32_t
+-    curTaskMmFromTaskStruct(Addr task_struct)
++    curTaskMm(Addr thread_info = 0)
+     {
+         int32_t offset;
+         if (!get_data("task_struct_mm", offset))
+             return -1;
+ 
+         int32_t mm_ptr;
+-        CopyOut(tc, &mm_ptr, task_struct + offset, sizeof(mm_ptr));
++        CopyOut(tc, &mm_ptr, curTaskInfo(thread_info) + offset, sizeof(mm_ptr));
+ 
+         return mm_ptr;
+     }
+-
+-    int32_t
+-    curTaskMm(Addr thread_info = 0)
+-    {
+-        return curTaskMmFromTaskStruct(curTaskInfo(thread_info));
+-    }
+ };
+ 
+ } // namespace Linux
+diff --git a/src/base/trace.cc b/src/base/trace.cc
+index f25572cf8..711d49655 100644
+--- a/src/base/trace.cc
++++ b/src/base/trace.cc
+@@ -87,12 +87,6 @@ setDebugLogger(Logger *logger)
+         debug_logger = logger;
+ }
+ 
+-void
+-toggle()
+-{
+-    enabled = !enabled;
+-}
+-
+ ObjectMatch ignore;
+ 
+ void
+diff --git a/src/base/trace.hh b/src/base/trace.hh
+index 7345bfae1..70e85bf35 100644
+--- a/src/base/trace.hh
++++ b/src/base/trace.hh
+@@ -119,9 +119,6 @@ void setDebugLogger(Logger *logger);
+ /** Enable debug logging */
+ extern bool enabled;
+ 
+-/** Toggle debug logging */
+-void toggle();
+-
+ } // namespace Trace
+ 
+ // This silly little class allows us to wrap a string in a functor
+diff --git a/src/cpu/SConscript b/src/cpu/SConscript
+index 8b8399c27..f2c4f2c06 100644
+--- a/src/cpu/SConscript
++++ b/src/cpu/SConscript
+@@ -101,7 +101,6 @@ DebugFlag('O3PipeView')
+ DebugFlag('PCEvent')
+ DebugFlag('Quiesce')
+ DebugFlag('Mwait')
+-DebugFlag('PointerDensity')
+ 
+ CompoundFlag('ExecAll', [ 'ExecEnable', 'ExecCPSeq', 'ExecEffAddr',
+     'ExecFaulting', 'ExecFetchSeq', 'ExecOpClass', 'ExecRegDelta',
+diff --git a/src/cpu/base.hh b/src/cpu/base.hh
+index d02b40b97..662b24a99 100644
+--- a/src/cpu/base.hh
++++ b/src/cpu/base.hh
+@@ -143,8 +143,6 @@ class BaseCPU : public MemObject
+      * used to generate a taskId */
+     uint32_t _pid;
+ 
+-    uint32_t _tgid;
+-
+     /** Is the CPU switched out or active? */
+     bool _switchedOut;
+ 
+@@ -201,9 +199,6 @@ class BaseCPU : public MemObject
+     uint32_t getPid() const { return _pid; }
+     void setPid(uint32_t pid) { _pid = pid; }
+ 
+-    uint32_t getTgid() const { return _tgid; }
+-    void setTgid(uint32_t tgid) { _tgid = tgid; }
+-
+     inline void workItemBegin() { numWorkItemsStarted++; }
+     inline void workItemEnd() { numWorkItemsCompleted++; }
+     // @todo remove me after debugging with legion done
+diff --git a/src/cpu/simple/atomic.cc b/src/cpu/simple/atomic.cc
+index c8bd39898..4c1c45355 100644
+--- a/src/cpu/simple/atomic.cc
++++ b/src/cpu/simple/atomic.cc
+@@ -52,7 +52,6 @@
+ #include "debug/Drain.hh"
+ #include "debug/ExecFaulting.hh"
+ #include "debug/SimpleCPU.hh"
+-#include "debug/PointerDensity.hh"
+ #include "mem/packet.hh"
+ #include "mem/packet_access.hh"
+ #include "mem/physical.hh"
+@@ -346,25 +345,9 @@ AtomicSimpleCPU::readMem(Addr addr, uint8_t * data,
+             if (req->isMmappedIpr())
+                 dcache_latency += TheISA::handleIprRead(thread->getTC(), &pkt);
+             else {
+-                if (fastmem && system->isMemAddr(pkt.getAddr())) {
++                if (fastmem && system->isMemAddr(pkt.getAddr()))
+                     system->getPhysMem().access(&pkt);
+-                    // data ptr now contains the result
+-                    uint32_t pid = tc->getCpuPtr()->getPid();
+-                    if (pid != -1) { // skip bootup
+-                        if (size == sizeof(Addr)) {
+-                            Addr val = *((Addr*)data);
+-                            DPRINTFR(PointerDensity, "%d,%d,0,%#lx,%d,%d,%d\n",
+-                                                    pid, tc->getCpuPtr()->getTgid(),
+-                                                    addr, size,
+-                                                    virtvalid(tc, val), val==0);
+-                        } else {
+-                            DPRINTFR(PointerDensity, "%d,%d,0,%#lx,%d\n",
+-                                                    pid,
+-                                                    tc->getCpuPtr()->getTgid(),
+-                                                    addr, size);
+-                        }
+-                    }
+-                } else
++                else
+                     dcache_latency += dcachePort.sendAtomic(&pkt);
+             }
+             dcache_access = true;
+@@ -472,23 +455,9 @@ AtomicSimpleCPU::writeMem(uint8_t *data, unsigned size,
+                     dcache_latency +=
+                         TheISA::handleIprWrite(thread->getTC(), &pkt);
+                 } else {
+-                    if (fastmem && system->isMemAddr(pkt.getAddr())) {
+-                        uint32_t pid = tc->getCpuPtr()->getPid();
+-                        if (pid != -1) { // skip bootup
+-                            if (size == sizeof(Addr)) {
+-                                Addr val = *((Addr*)data);
+-                                DPRINTFR(PointerDensity, "%d,%d,1,%#lx,%d,%d,%d\n",
+-                                                        pid, tc->getCpuPtr()->getTgid(),
+-                                                        addr, size,
+-                                                        virtvalid(tc, val), val==0);
+-                            } else {
+-                                DPRINTFR(PointerDensity, "%d,%d,1,%#lx,%d\n",
+-                                                        pid, tc->getCpuPtr()->getTgid(),
+-                                                        addr, size);
+-                            }
+-                        }
++                    if (fastmem && system->isMemAddr(pkt.getAddr()))
+                         system->getPhysMem().access(&pkt);
+-                    } else
++                    else
+                         dcache_latency += dcachePort.sendAtomic(&pkt);
+                 }
+                 dcache_access = true;
+diff --git a/src/mem/comm_monitor.cc b/src/mem/comm_monitor.cc
+index 7efeaa0b9..a0f8688f2 100644
+--- a/src/mem/comm_monitor.cc
++++ b/src/mem/comm_monitor.cc
+@@ -189,7 +189,6 @@ CommMonitor::recvAtomic(PacketPtr pkt)
+         pkt_msg.set_flags(pkt->req->getFlags());
+         pkt_msg.set_addr(pkt->getAddr());
+         pkt_msg.set_size(pkt->getSize());
+-        pkt_msg.set_data(std::string(pkt->getPtr<char>(), pkt->getSize()));
+ 
+         traceStream->write(pkt_msg);
+     }
+@@ -252,7 +251,6 @@ CommMonitor::recvTimingReq(PacketPtr pkt)
+         pkt_msg.set_flags(req_flags);
+         pkt_msg.set_addr(addr);
+         pkt_msg.set_size(size);
+-        pkt_msg.set_data(std::string(pkt->getPtr<char>(), size));
+ 
+         traceStream->write(pkt_msg);
+     }
+diff --git a/src/proto/packet.proto b/src/proto/packet.proto
+index 4bc7dd947..d27599691 100644
+--- a/src/proto/packet.proto
++++ b/src/proto/packet.proto
+@@ -60,7 +60,6 @@ message Packet {
+   required uint32 cmd = 2;
+   required uint64 addr = 3;
+   required uint32 size = 4;
+-  optional bytes data = 5;
+-  optional uint32 flags = 6;
+-  optional uint64 pkt_id = 7;
++  optional uint32 flags = 5;
++  optional uint64 pkt_id = 6;
+ }
+diff --git a/src/python/m5/main.py b/src/python/m5/main.py
+index b451e19ae..700aae3d3 100644
+--- a/src/python/m5/main.py
++++ b/src/python/m5/main.py
+@@ -100,9 +100,6 @@ def parse_options():
+         help="Print help on debug flags")
+     option("--debug-flags", metavar="FLAG[,FLAG]", action='append', split=',',
+         help="Sets the flags for debug output (-FLAG disables a flag)")
+-    option("--debug-disable-at-start", action="store_true", default=False,
+-        help="Start with the debug options disabled. Can be enabled later with " \
+-             "the toggletracing pseudo instruction.")
+     option("--debug-start", metavar="TIME", type='int',
+         help="Start debug output at TIME (must be in ticks)")
+     option("--debug-file", metavar="FILE", default="cout",
+@@ -342,13 +339,12 @@ def main(*args):
+             else:
+                 debug.flags[flag].enable()
+ 
+-    if not options.debug_disable_at_start:
+-        if options.debug_start:
+-            check_tracing()
+-            e = event.create(trace.enable, event.Event.Debug_Enable_Pri)
+-            event.mainq.schedule(e, options.debug_start)
+-        else:
+-            trace.enable()
++    if options.debug_start:
++        check_tracing()
++        e = event.create(trace.enable, event.Event.Debug_Enable_Pri)
++        event.mainq.schedule(e, options.debug_start)
++    else:
++        trace.enable()
+ 
+     trace.output(options.debug_file)
+ 
+diff --git a/src/sim/pseudo_inst.cc b/src/sim/pseudo_inst.cc
+index a2b1e05b2..80737003c 100644
+--- a/src/sim/pseudo_inst.cc
++++ b/src/sim/pseudo_inst.cc
+@@ -196,13 +196,10 @@ pseudoInst(ThreadContext *tc, uint8_t func, uint8_t subfunc)
+       case 0x56: // reserved2_func
+       case 0x57: // reserved3_func
+       case 0x58: // reserved4_func
++      case 0x59: // reserved5_func
+         warn("Unimplemented m5 op (0x%x)\n", func);
+         break;
+ 
+-      case 0x59: // toggletracing_func
+-        toggletracing(tc);
+-        break;
+-
+       /* SE mode functions */
+       case 0x60: // syscall_func
+         m5Syscall(tc);
+@@ -720,14 +717,4 @@ workend(ThreadContext *tc, uint64_t workid, uint64_t threadid)
+     }
+ }
+ 
+-void
+-toggletracing(ThreadContext *tc)
+-{
+-    // Print on either side of the toggle so we always get a message that we
+-    // called toggle
+-    DPRINTF(PseudoInst, "PseudoInst::toggletracing()\n");
+-    Trace::toggle();
+-    DPRINTF(PseudoInst, "PseudoInst::toggletracing()\n");
+-}
+-
+ } // namespace PseudoInst
+diff --git a/src/sim/pseudo_inst.hh b/src/sim/pseudo_inst.hh
+index fcf9ef114..b6e32847a 100644
+--- a/src/sim/pseudo_inst.hh
++++ b/src/sim/pseudo_inst.hh
+@@ -88,7 +88,6 @@ void debugbreak(ThreadContext *tc);
+ void switchcpu(ThreadContext *tc);
+ void workbegin(ThreadContext *tc, uint64_t workid, uint64_t threadid);
+ void workend(ThreadContext *tc, uint64_t workid, uint64_t threadid);
+-void toggletracing(ThreadContext *tc);
+ 
+ } // namespace PseudoInst
+ 
+diff --git a/util/decode_packet_trace.py b/util/decode_packet_trace.py
+index d228dbda4..e9105753d 100755
+--- a/util/decode_packet_trace.py
++++ b/util/decode_packet_trace.py
+@@ -75,25 +75,6 @@ except:
+         print "Failed to import packet proto definitions"
+         exit(-1)
+ 
+-def str2hexstr(s):
+-    return ''.join(hex(ord(c))[2:].rjust(2,"0") for c in s)
+-
+-def cmd2txt(c):
+-    # From src/mem/packet.hh
+-    commands = [ "InvalidCmd", "ReadReq", "ReadResp",
+-        "ReadRespWithInvalidate", "WriteReq", "WriteResp",
+-        "Writeback", "SoftPFReq", "HardPFReq",
+-        "SoftPFResp", "HardPFResp", "WriteInvalidateReq",
+-        "WriteInvalidateResp", "UpgradeReq", "SCUpgradeReq",
+-        "UpgradeResp", "SCUpgradeFailReq", "UpgradeFailResp",
+-        "ReadExReq", "ReadExResp", "LoadLockedReq",
+-        "StoreCondReq", "StoreCondFailReq", "StoreCondResp",
+-        "SwapReq", "SwapResp", "MessageReq",
+-        "MessageResp", "InvalidDestError", "BadAddressError",
+-        "FunctionalReadError", "FunctionalWriteError", "PrintReq",
+-        "FlushReq", "InvalidationReq"]
+-    return commands[c] if 0 < c and c < len(commands) else "Unknown"
+-
+ def main():
+     if len(sys.argv) != 3:
+         print "Usage: ", sys.argv[0], " <protobuf input> <ASCII output>"
+@@ -129,18 +110,19 @@ def main():
+     num_packets = 0
+     packet = packet_pb2.Packet()
+ 
+-    ascii_out.write('%2s,%22s,%016s,%4s,%5s,%4s,%s\n' % ("ID", "Command", "Address", "Size", "Flags", "Tick", "Data"))
+     # Decode the packet messages until we hit the end of the file
+     while protolib.decodeMessage(proto_in, packet):
+         num_packets += 1
+-        ascii_out.write('%2s,%22s,%016x,%4s,%5s,%4s,%s\n' % 
+-                ( packet.pkt_id if packet.HasField('pkt_id') else ""
+-                , cmd2txt(packet.cmd) if packet.HasField('cmd') else "ERROR"
+-                , packet.addr if packet.HasField('addr') else 0xDEADDEADDEADDEAD
+-                , packet.size if packet.HasField('size') else 0xDEADDEADDEADDEAD
+-                , packet.flags if packet.HasField('flags') else ""
+-                , packet.tick if packet.HasField('tick') else "ERROR"
+-                , str2hexstr(packet.data) if packet.HasField('data') else ""))
++        # ReadReq is 1 and WriteReq is 4 in src/mem/packet.hh Command enum
++        cmd = 'r' if packet.cmd == 1 else ('w' if packet.cmd == 4 else 'u')
++        if packet.HasField('pkt_id'):
++            ascii_out.write('%s,' % (packet.pkt_id))
++        if packet.HasField('flags'):
++            ascii_out.write('%s,%s,%s,%s,%s\n' % (cmd, packet.addr, packet.size,
++                            packet.flags, packet.tick))
++        else:
++            ascii_out.write('%s,%s,%s,%s\n' % (cmd, packet.addr, packet.size,
++                                           packet.tick))
+ 
+     print "Parsed packets:", num_packets
+ 
+diff --git a/util/m5/m5op.h b/util/m5/m5op.h
+index ddd5d758f..9df9a7429 100644
+--- a/util/m5/m5op.h
++++ b/util/m5/m5op.h
+@@ -61,7 +61,6 @@ void m5_addsymbol(uint64_t addr, char *symbol);
+ void m5_panic(void);
+ void m5_work_begin(uint64_t workid, uint64_t threadid);
+ void m5_work_end(uint64_t workid, uint64_t threadid);
+-void m5_toggletracing(void);
+ 
+ // These operations are for critical path annotation
+ void m5a_bsm(char *sm, const void *id, int flags);
+diff --git a/util/m5/m5op_arm_A64.S b/util/m5/m5op_arm_A64.S
+index c7d2ccc2a..faba78c8e 100644
+--- a/util/m5/m5op_arm_A64.S
++++ b/util/m5/m5op_arm_A64.S
+@@ -88,7 +88,6 @@ func:
+ #define PANIC INST(m5_op, 0, 0, panic_func)
+ #define WORK_BEGIN INST(m5_op, 0, 0, work_begin_func)
+ #define WORK_END INST(m5_op, 0, 0, work_end_func)
+-#define TOGGLETRACING INST(m5_op, 0, 0, toggletracing_func)
+ 
+ #define AN_BSM INST(m5_op, an_bsm, 0, annotate_func)
+ #define AN_ESM INST(m5_op, an_esm, 0, annotate_func)
+@@ -132,7 +131,6 @@ SIMPLE_OP(m5_addsymbol, ADDSYMBOL)
+ SIMPLE_OP(m5_panic, PANIC)
+ SIMPLE_OP(m5_work_begin, WORK_BEGIN)
+ SIMPLE_OP(m5_work_end, WORK_END)
+-SIMPLE_OP(m5_toggletracing, TOGGLETRACING)
+ 
+ SIMPLE_OP(m5a_bsm, AN_BSM)
+ SIMPLE_OP(m5a_esm, AN_ESM)
+diff --git a/util/m5/m5ops.h b/util/m5/m5ops.h
+index 6b31a88f9..cd3b17b2d 100644
+--- a/util/m5/m5ops.h
++++ b/util/m5/m5ops.h
+@@ -57,8 +57,7 @@
+ #define reserved2_func          0x56 // Reserved for user
+ #define reserved3_func          0x57 // Reserved for user
+ #define reserved4_func          0x58 // Reserved for user
+-
+-#define toggletracing_func      0x59
++#define reserved5_func          0x59 // Reserved for user
+ 
+ #define work_begin_func         0x5a
+ #define work_end_func           0x5b
