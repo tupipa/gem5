@@ -1,12 +1,22 @@
 
-""" This file creates a barebones system and executes 'hello', a simple Hello
+"""
+#########################################################################
+
+This file creates a barebones system and executes 'hello', a simple Hello
 World application. Adds a simple memobj between the CPU and the membus.
+
+CPU --- Memobject --- Memory Bus
+
+#########################################################################
 
 Lele:
 
-  this is extended to have a layer of tag controller, which has a tag cache
+  This is extended to have a layer of tag controller, which has a tag cache
   inside and two ports connecting to memory bus.
 
+CPU --- Memobject --- TagController --- Memory Bus
+
+##########################################################################
 
 This config file assumes that the x86 ISA was built.
 """
