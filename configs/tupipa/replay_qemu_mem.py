@@ -58,6 +58,8 @@ import protolib
 if six.PY3:
     long = int
 
+# Lele: this is written based on configs/dram/lat_mem_rd.py
+#
 # this script is helpful to observe the memory latency for various
 # levels in a cache hierarchy, and various cache and memory
 # configurations, in essence replicating the lmbench lat_mem_rd thrash
@@ -96,6 +98,9 @@ parser.add_option("--mem-size", action="store", type="string",
                   help="Specify the memory size")
 parser.add_option("--reuse-trace", action="store_true",
                   help="Prevent generation of traces and reuse existing")
+
+parser.add_option("--enable-shadow-tags", action="store_true",
+                  help="Enable tag cache for shadow memory at L3 layer.")
 
 (options, args) = parser.parse_args()
 
