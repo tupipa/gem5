@@ -280,6 +280,24 @@ system.tgen.port = system.monitor.slave
 # basic to explore some of the options
 from common.Caches import *
 
+##############################
+## Define a TagController
+#
+#  L1 -- L2 -- TagController -- Memory
+#
+#  TagController:
+#
+#  One input from L2; internal two path(tag + data); merged path to memory
+#
+# L2 -> request -> |  tag controller                 | --> Memory
+#               <- |-> data request forword -------->| <--
+#                  |-> tag request ->|  tag cache    |
+#                                    |-> tag req   ->|
+#
+#
+class TagController():
+    def __init__(self, )
+
 # a starting point for an L3 cache
 class L3Cache(Cache):
     assoc = 16
@@ -294,10 +312,14 @@ class L3Cache(Cache):
 # note that everything is in the same clock domain, 2.0 GHz as
 # specified above
 system.l1cache = L1_DCache(size = '64kB')
+
+# Monitor (master) --> l1cache (slave)
 system.monitor.master = system.l1cache.cpu_side
 
 system.l2cache = L2Cache(size = '512kB', writeback_clean = True)
 system.l2cache.xbar = L2XBar()
+
+# L1 cache.mem_side (master) --> l2cache.xbar.slave --> l2 cache (slave)
 system.l1cache.mem_side = system.l2cache.xbar.slave
 system.l2cache.cpu_side = system.l2cache.xbar.master
 
