@@ -1,36 +1,10 @@
-/*
- * Copyright (c) 2017 Jason Lowe-Power
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
 
-#ifndef __LEARNING_GEM5_PART2_SIMPLE_MEMOBJ_HH__
-#define __LEARNING_GEM5_PART2_SIMPLE_MEMOBJ_HH__
+#ifndef __TUPIPA_TAG_CONTROLLER_HH
+#define __TUPIPA_TAG_CONTROLLER_HH
 
+#include "mem/cache/cache.hh"
 #include "mem/port.hh"
-#include "params/SimpleMemobj.hh"
+#include "params/TagController.hh"
 #include "sim/sim_object.hh"
 
 /**
@@ -39,20 +13,20 @@
  * This memobj is fully blocking (not non-blocking). Only a single request can
  * be outstanding at a time.
  */
-class SimpleMemobj : public SimObject
+class TagController : public SimObject
 {
   private:
 
     /**
      * Port on the CPU-side that receives requests.
      * Mostly just forwards requests to the owner.
-     * Part of a vector of ports. One for each CPU port (e.g., data, inst)
+     * Lele: one port from l2 cache
      */
     class CPUSidePort : public SlavePort
     {
       private:
-        /// The object that owns this object (SimpleMemobj)
-        SimpleMemobj *owner;
+        /// The object that owns this object (TagController)
+        TagController *owner;
 
         /// True if the port needs to send a retry req.
         bool needRetry;
@@ -64,7 +38,7 @@ class SimpleMemobj : public SimObject
         /**
          * Constructor. Just calls the superclass constructor.
          */
-        CPUSidePort(const std::string& name, SimpleMemobj *owner) :
+        CPUSidePort(const std::string& name, TagController *owner) :
             SlavePort(name, owner), owner(owner), needRetry(false),
             blockedPacket(nullptr)
         { }
@@ -88,7 +62,7 @@ class SimpleMemobj : public SimObject
 
         /**
          * Send a retry to the peer port only if it is needed. This is called
-         * from the SimpleMemobj whenever it is unblocked.
+         * from the TagController whenever it is unblocked.
          */
         void trySendRetry();
 
@@ -128,13 +102,18 @@ class SimpleMemobj : public SimObject
 
     /**
      * Port on the memory-side that receives responses.
-     * Mostly just forwards requests to the owner
+     *
+     * Two memory side port in a tag controller:
+     *
+     * - One used for original data request, which are forwarded to the owner
+     * - One used for tag data request, happens if tag cache miss.
+     *
      */
     class MemSidePort : public MasterPort
     {
       private:
-        /// The object that owns this object (SimpleMemobj)
-        SimpleMemobj *owner;
+        /// The object that owns this object (TagController)
+        TagController *owner;
 
         /// If we tried to send a packet and it was blocked, store it here
         PacketPtr blockedPacket;
@@ -143,7 +122,7 @@ class SimpleMemobj : public SimObject
         /**
          * Constructor. Just calls the superclass constructor.
          */
-        MemSidePort(const std::string& name, SimpleMemobj *owner) :
+        MemSidePort(const std::string& name, TagController *owner) :
             MasterPort(name, owner), owner(owner), blockedPacket(nullptr)
         { }
 
@@ -217,21 +196,31 @@ class SimpleMemobj : public SimObject
      */
     void sendRangeChange();
 
+    /// Instantiation of the tagCache
+    Cache tagCache;
+
     /// Instantiation of the CPU-side ports
-    CPUSidePort instPort;
     CPUSidePort dataPort;
 
     /// Instantiation of the memory-side port
-    MemSidePort memPort;
+    MemSidePort memDataPort;
+    MemSidePort memTagPort;
 
     /// True if this is currently blocked waiting for a response.
     bool blocked;
+
+    /// Lele: whether tag is ready to response
+    bool tag_is_ready;
+    /// Lele: whetehr data is ready to response
+    bool data_is_ready;
+
+    bool grouping_factor;
 
   public:
 
     /** constructor
      */
-    SimpleMemobj(SimpleMemobjParams *params);
+    TagController(TagControllerParams *params);
 
     /**
      * Get a port with a given name and index. This is used at
@@ -248,4 +237,4 @@ class SimpleMemobj : public SimObject
 };
 
 
-#endif // __LEARNING_GEM5_PART2_SIMPLE_MEMOBJ_HH__
+#endif // __TUPIPA_TAG_CONTROLLER_HH

@@ -14,6 +14,7 @@ Source('hello_object2.cc')
 
 DebugFlag('Hello2')
 
+###############################
 # SConscript for SimpleMemobj2
 
 #SimObject('SimpleMemobj2.py')
@@ -21,4 +22,9 @@ DebugFlag('Hello2')
 
 #DebugFlag("SimpleMemobj2")
 
+##############################
+# Sconscript for TagController
+SimObject('TagController.py')
+Source('tag_controller.cc')
+DebugFlag('TagController')
 

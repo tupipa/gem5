@@ -31,12 +31,16 @@ One cpu side port, and two memside port.
 
 TagController::TagController(TagControllerParams *params) :
     SimObject(params),
-    instPort(params->name + ".inst_port", this),
     dataPort(params->name + ".data_port", this),
-    memPort(params->name + ".mem_side", this),
+    memDataPort(params->name + ".mem_side_data", this),
+    memTagPort(params->name + ".mem_side_tag", this),
+    tagCache(params->name + ".tag_cache", this),
     blocked(false)
 {
-}
+    //Lele: connect the tag cache port with memory bus
+    // memTagPort = tagCache.slave
+
+ }
 
 Port &
 TagController::getPort(const std::string &if_name, PortID idx)
@@ -44,10 +48,10 @@ TagController::getPort(const std::string &if_name, PortID idx)
     panic_if(idx != InvalidPortID, "This object doesn't support vector ports");
 
     //This is the name from the Python SimObject declaration (TagController.py)
-    if (if_name == "mem_side") {
-        return memPort;
-    } else if (if_name == "inst_port") {
-        return instPort;
+    if (if_name == "mem_side_data") {
+        return memDataPort;
+    } else if (if_name == "mem_side_tag") {
+        return memTagPort;
     } else if (if_name == "data_port") {
         return dataPort;
     } else {
@@ -98,6 +102,7 @@ TagController::CPUSidePort::recvFunctional(PacketPtr pkt)
 bool
 TagController::CPUSidePort::recvTimingReq(PacketPtr pkt)
 {
+
     // Just forward to the memobj.
     if (!owner->handleRequest(pkt)) {
         needRetry = true;
@@ -183,8 +188,31 @@ TagController::handleRequest(PacketPtr pkt)
     // This memobj is now blocked waiting for the response to this packet.
     blocked = true;
 
-    // Simply forward to the memory port
-    memPort.sendPacket(pkt);
+    // Lele:
+    // - convert the pkt address
+    // - check short cut route (via compression) (todo)
+    // - If no short cut, then send it to memTagPort
+    //    - duplicate the packet
+    //    - update its physical address
+    //    - send the packet via memTagPort
+    Addr newAddr = pkt->getAddr() >> 1;
+
+    ///////////////////////////////////////////////////
+    //   Here we should add our opt
+    //   TODO:
+    //   1. grouping fix size tags
+    ////////////////////////////////////////////////////
+
+    // Now just forward without compression
+    PacketPtr tagPkt = new Packet(pkt, false, true);
+    tagPkt->setAddr(newAddr);
+
+    memTagPort.sendPacket(pkt);
+    tag_is_ready = false;
+
+    // Also forward data request to the memory port
+    memDataPort.sendPacket(pkt);
+    data_is_ready = false;
 
     return true;
 }
@@ -201,17 +229,30 @@ TagController::handleResponse(PacketPtr pkt)
     // tries to send another request immediately (e.g., in the same callchain).
     blocked = false;
 
-    // Simply forward to the memory port
-    if (pkt->req->isInstFetch()) {
-        instPort.sendPacket(pkt);
-    } else {
-        dataPort.sendPacket(pkt);
-    }
+    // Lele:
+    // Check the type of the response, and set the corresponding flag
 
-    // For each of the cpu ports, if it needs to send a retry, it should do it
-    // now since this memory object may be unblocked now.
-    instPort.trySendRetry();
-    dataPort.trySendRetry();
+    Addr reqAddr = pkt->getAddr();
+
+    if (isTagAddr(reqAddr))
+            tag_is_ready = true;
+    else
+            data_is_ready = true;
+
+    // If both tag and data is ready,
+    // forward to the memory port
+    if (tag_is_ready && data_is_ready)
+    {
+       // Lele: combine both tag and data into one packet
+       // Send it back
+       // Ignore tag right now since only simulation
+
+      dataPort.sendPacket(pkt);
+      // For each of the cpu ports, if it needs to send a retry, it should do
+      // now since this memory object may be unblocked now.
+      dataPort.trySendRetry();
+
+    }
 
     return true;
 }
