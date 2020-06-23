@@ -342,25 +342,28 @@ if (options.enable_shadow_tags):
     tag_controller.tag_cache = tag_cache
 
 
-    # L2 -- xbar -- TagController
+    # L2 -- tagcon.xbar -- tagcon.data_port TagController
     # bus between L2 and tag_controller
-    tag_controller.xbar = L2XBar()
-    system.l2cache.mem_side = tag_controller.xbar.slave
-    tag_controller.data_port = tag_controller.xbar.master
+    # tag_controller.xbar = L2XBar()
+    # system.l2cache.mem_side = tag_controller.xbar.slave
+    # tag_controller.data_port = tag_controller.xbar.master
 
-    # TagController -- Memory bus
+    # L2 -- tagcon.data_port TagController
+    system.l2cache.mem_side = tag_controller.data_port
+
+    # TagController --(data)-- Memory bus
     # connection between tag_controller and memory bus
     # see learning_gem5/part1/caches.py:connectBus()
     tag_controller.mem_side_data = system.membus.slave
-    tag_controller.mem_side_tag = system.membus.slave
 
+    # TagController --(tag)--tag cache -- Memory Bus
     ## Inside TagController:
-    # data_port --- xbar -- tag_cache.cpu_side
-    # tag_cache.mem_side -- mem_side_tag
-    tag_cache.xbar = L2XBar()
-    tag_controller.xbar.master = tag_cache.xbar.slave
-    tag_cache.cpu_side = tag_cache.xbar.master
-
+    # tagcon.mem_side_tag -- tag_cache.cpu_side
+    #                         tag_cache.mem_side -- mem_side_tag
+    #
+    # tag_cache.xbar.mem_ranges=[max_range/2]
+    tag_cache.addr_ranges = [max_range/2]
+    tag_controller.mem_side_tag = tag_cache.cpu_side
     tag_cache.mem_side = system.membus.slave
 
     system.l3cache = tag_controller
