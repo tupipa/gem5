@@ -205,7 +205,7 @@ def create_trace(filename, max_addr, burst_size, itt):
     protolib.encodeMessage(proto_out, header)
 
     # create a list of every single address to touch
-    addrs = list(range(0, max_addr, burst_size))
+    addrs = list(range(max_addr/2, max_addr, burst_size))
 
     import random
     random.shuffle(addrs)
