@@ -223,7 +223,10 @@ TagController::handleRequest(PacketPtr pkt)
 
         // assume is handled?
         //   return true;
+
         // Do not handle it.
+        // This acts as if tag controller is blocked.
+        // Will the caller resend the packet?
         return false;
     }else{
         DPRINTF(TagController,
@@ -241,6 +244,8 @@ TagController::handleRequest(PacketPtr pkt)
     //    - send the packet via memTagPort
     Addr newAddr = pkt->getAddr() >> 1;
 
+    DPRINTF(TagController,
+        "Request Tag Addr %#x\n", newAddr);
     ///////////////////////////////////////////////////
     //   Here we should add our opt
     //   TODO:
@@ -248,15 +253,27 @@ TagController::handleRequest(PacketPtr pkt)
     ////////////////////////////////////////////////////
 
     // Now just forward without compression
-    PacketPtr tagPkt = new Packet(pkt, false, true);
-    tagPkt->setAddr(newAddr);
 
-    memTagPort.sendPacket(pkt);
+    // Create a new request
+    PacketPtr tag_pkt = new Packet(pkt, false, true);
+    // new request with new addr.
+    RequestPtr tag_req = std::make_shared<Request>(*(tag_pkt->req));
+    tag_req->setPaddr(newAddr);
+    tag_pkt->req = tag_req;
+    tag_pkt->setAddr(newAddr);
+
+    memTagPort.sendPacket(tag_pkt);
     tag_is_ready = false;
+
+    DPRINTF(TagController,
+        "Tag Packet Sent %#x\n", newAddr);
 
     // Also forward data request to the memory port
     memDataPort.sendPacket(pkt);
     data_is_ready = false;
+
+    DPRINTF(TagController,
+        "Data Packet Sent %#x\n", pkt->getAddr());
 
     return true;
 }
