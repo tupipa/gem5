@@ -341,15 +341,22 @@ if (options.enable_shadow_tags):
     tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
     tag_controller.tag_cache = tag_cache
 
-
+    ########################
+    #  L2 -- TagController
+    ########################
     # L2 -- tagcon.xbar -- tagcon.data_port TagController
     # bus between L2 and tag_controller
     # tag_controller.xbar = L2XBar()
     # system.l2cache.mem_side = tag_controller.xbar.slave
     # tag_controller.data_port = tag_controller.xbar.master
 
+    # Simpler way: no xbar
     # L2 -- tagcon.data_port TagController
     system.l2cache.mem_side = tag_controller.data_port
+
+    #####################################
+    # TagController ---...--- Memory Bus
+    #####################################
 
     # TagController --(data)-- Memory bus
     # connection between tag_controller and memory bus
@@ -362,11 +369,15 @@ if (options.enable_shadow_tags):
     #                         tag_cache.mem_side -- mem_side_tag
     #
     # tag_cache.xbar.mem_ranges=[max_range/2]
-    tag_cache.addr_ranges = [max_range/2]
+    # tag_cache.addr_ranges = [max_range/2]
     tag_controller.mem_side_tag = tag_cache.cpu_side
     tag_cache.mem_side = system.membus.slave
 
-    system.l3cache = tag_controller
+    ###############################################
+    # attach TagController object to the system
+    ###############################################
+    # system.l3cache = tag_controller
+    system.tag_controller = tag_controller
 else:
     print ("Using regular L3 Cache without Tag Cache...")
     # make the L3 mostly exclusive, and correspondingly ensure that the L2
