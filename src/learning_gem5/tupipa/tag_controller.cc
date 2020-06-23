@@ -43,15 +43,33 @@ TagController::TagController(TagControllerParams *params) :
 
  }
 
-#define MOST_SIG_BIT (1UL<<63)
+// #define MOST_SIG_BIT (1UL<<63)
 
 bool
 TagController::isTagAddr(Addr addr){
-   // if most sig bit is one, then data memory
-   if (addr & MOST_SIG_BIT){
+   // tag addr is first half (0x00 -- range/2)
+   // data addr is second half (range/2 -- range)
+
+   Addr max_range_addr = 0x0;
+
+   int ii = 0;
+   for (auto range : getAddrRanges() ){
+     if (max_range_addr < range.end()){
+        max_range_addr = range.end();
+     }
+     DPRINTF(TagController,
+             "End Addr in range[%d]: 0x%lx\n", ii++, max_range_addr);
+
+   }
+
+   DPRINTF(TagController,
+           "Max Addr: 0x%lx\n", max_range_addr);
+
+   Addr half_range_addr = max_range_addr >> 1;
+
+   if (addr >= half_range_addr){
        return false;
    }
-   // if most sig bit is 0, then tag table.
    return true;
 }
 
@@ -196,8 +214,21 @@ TagController::handleRequest(PacketPtr pkt)
         return false;
     }
 
-    DPRINTF(TagController, "Got request for addr %#x\n", pkt->getAddr());
+    if (isTagAddr(pkt->getAddr())){
 
+        DPRINTF(TagController,
+          "WARNING: Invalid Request for Tag Addr %#x\n", pkt->getAddr());
+        DPRINTF(TagController,
+          "WARNING: Now drop it without proceeding\n");
+
+        // assume is handled?
+        //   return true;
+        // Do not handle it.
+        return false;
+    }else{
+        DPRINTF(TagController,
+          "Got valid request for addr %#x\n", pkt->getAddr());
+    }
     // This memobj is now blocked waiting for the response to this packet.
     blocked = true;
 
@@ -230,11 +261,19 @@ TagController::handleRequest(PacketPtr pkt)
     return true;
 }
 
+// Combine the tag and data packet for response
+PacketPtr
+TagController::combineRespPackets(){
+    // Ignore tag packet right now since only simulation
+    PacketPtr pkt = data_resp_pkt;
+    return pkt;
+}
+
+
 bool
 TagController::handleResponse(PacketPtr pkt)
 {
     assert(blocked);
-    DPRINTF(TagController, "Got response for addr %#x\n", pkt->getAddr());
 
     // The packet is now done. We're about to put it in the port, no need for
     // this object to continue to stall.
@@ -247,18 +286,24 @@ TagController::handleResponse(PacketPtr pkt)
 
     Addr reqAddr = pkt->getAddr();
 
-    if (isTagAddr(reqAddr))
-            tag_is_ready = true;
-    else
-            data_is_ready = true;
-
+    if (isTagAddr(reqAddr)){
+        DPRINTF(TagController, "Got response for tag addr %#x\n",
+                               pkt->getAddr());
+        tag_is_ready = true;
+        tag_resp_pkt = pkt;
+    }else{
+        DPRINTF(TagController, "Got response for data addr %#x\n",
+                               pkt->getAddr());
+        data_is_ready = true;
+        data_resp_pkt = pkt;
+    }
     // If both tag and data is ready,
     // forward to the memory port
     if (tag_is_ready && data_is_ready)
     {
        // Lele: combine both tag and data into one packet
        // Send it back
-       // Ignore tag right now since only simulation
+      pkt = combineRespPackets();
 
       dataPort.sendPacket(pkt);
       // For each of the cpu ports, if it needs to send a retry, it should do
@@ -280,9 +325,17 @@ TagController::handleFunctional(PacketPtr pkt)
 AddrRangeList
 TagController::getAddrRanges() const
 {
-    DPRINTF(TagController, "Sending new ranges\n");
+
+    AddrRangeList ranges = memDataPort.getAddrRanges();
+
+    DPRINTF(TagController, "Sending new ranges:\n");
     // Just use the same ranges as whatever is on the memory side.
-    return memDataPort.getAddrRanges();
+    for (auto i : ranges){
+        DPRINTF(TagController, "\t%s\n", i.to_string());
+    }
+    // Just use the same ranges as whatever is on the memory side.
+
+    return ranges;
 }
 
 void

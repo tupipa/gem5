@@ -223,6 +223,12 @@ class TagController : public SimObject
      */
     bool isTagAddr(Addr addr);
 
+    /**
+     * Combine two response packets
+     * return pkt = data_resp_pkt + tag_resp_pkt
+     */
+    PacketPtr combineRespPackets();
+
     /// Instantiation of the tagCache
     Cache *tagCache;
 
@@ -242,6 +248,11 @@ class TagController : public SimObject
     bool data_is_ready;
 
     bool grouping_factor;
+
+    // Pointers to Tag Packet for response
+    PacketPtr tag_resp_pkt;
+    // Pointers to Data Packet for response
+    PacketPtr data_resp_pkt;
 
   public:
 
