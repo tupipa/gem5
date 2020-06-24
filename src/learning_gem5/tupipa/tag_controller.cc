@@ -41,33 +41,57 @@ TagController::TagController(TagControllerParams *params) :
     //Lele: connect the tag cache port with memory bus
     // memTagPort = tagCache.slave
 
+    // tag addr is first half (0x00 -- range/2)
+    // data addr is second half (range/2 -- range)
+
+    has_max_set = false;
+    _data_max_addr = 0x0;
+    _tag_max_addr = 0x0;
+
+}
+
+bool
+TagController::initDataTagBoundary(){
+
+    _data_max_addr = 0x0;
+    int ii = 0;
+    for (auto range : memDataPort.getAddrRanges()){
+        if (_data_max_addr < range.end()){
+           _data_max_addr = range.end();
+        }
+        DPRINTF(TagController,
+          "End Addr in range[%d]: 0x%lx\n", ii++, _data_max_addr);
+
+   }
+
+   DPRINTF(TagController,
+     "Max Addr: 0x%lx\n", _data_max_addr);
+
+   _tag_max_addr = _data_max_addr >> 1;
+   _data_tag_address_diff = _data_max_addr - _tag_max_addr;
+
+
+   // Flagging the _tag/data_max_addr are availabe for use
+   has_max_set = true;
+
+   DPRINTF(TagController,
+      "TagController tag/data max address set(0x%lx/0x%x)!\n",
+      _tag_max_addr, _data_max_addr);
+
+   return true;
+
+
  }
 
 // #define MOST_SIG_BIT (1UL<<63)
 
 bool
 TagController::isTagAddr(Addr addr){
-   // tag addr is first half (0x00 -- range/2)
-   // data addr is second half (range/2 -- range)
 
-   Addr max_range_addr = 0x0;
-
-   int ii = 0;
-   for (auto range : getAddrRanges() ){
-     if (max_range_addr < range.end()){
-        max_range_addr = range.end();
-     }
-     DPRINTF(TagController,
-             "End Addr in range[%d]: 0x%lx\n", ii++, max_range_addr);
-
+   if (!has_max_set){
+      initDataTagBoundary();
    }
-
-   DPRINTF(TagController,
-           "Max Addr: 0x%lx\n", max_range_addr);
-
-   Addr half_range_addr = max_range_addr >> 1;
-
-   if (addr >= half_range_addr){
+   if (addr >= _tag_max_addr){
        return false;
    }
    return true;
@@ -214,6 +238,15 @@ TagController::handleRequest(PacketPtr pkt)
         return false;
     }
 
+    // Lele:
+    // - check valid data address
+    // - convert the pkt address
+    // - check short cut route (via compression) (todo)
+    // - If no short cut, then send it to memTagPort
+    //    - duplicate the packet
+    //    - update its physical address
+    //    - send the packet via memTagPort
+
     if (isTagAddr(pkt->getAddr())){
 
         DPRINTF(TagController,
@@ -235,14 +268,7 @@ TagController::handleRequest(PacketPtr pkt)
     // This memobj is now blocked waiting for the response to this packet.
     blocked = true;
 
-    // Lele:
-    // - convert the pkt address
-    // - check short cut route (via compression) (todo)
-    // - If no short cut, then send it to memTagPort
-    //    - duplicate the packet
-    //    - update its physical address
-    //    - send the packet via memTagPort
-    Addr newAddr = pkt->getAddr() >> 1;
+    Addr newAddr = pkt->getAddr() - _data_tag_address_diff;
 
     DPRINTF(TagController,
         "Request Tag Addr %#x\n", newAddr);
@@ -292,12 +318,6 @@ TagController::handleResponse(PacketPtr pkt)
 {
     assert(blocked);
 
-    // The packet is now done. We're about to put it in the port, no need for
-    // this object to continue to stall.
-    // We need to free the resource before sending the packet in case the CPU
-    // tries to send another request immediately (e.g., in the same callchain).
-    blocked = false;
-
     // Lele:
     // Check the type of the response, and set the corresponding flag
 
@@ -318,8 +338,16 @@ TagController::handleResponse(PacketPtr pkt)
     // forward to the memory port
     if (tag_is_ready && data_is_ready)
     {
-       // Lele: combine both tag and data into one packet
-       // Send it back
+      // The packet is now done. We're about to put it in the port,
+      // no need for this object to continue to stall.
+      // We need to free the resource before sending the packet in
+      // case the CPU tries to send another request immediately
+      // (e.g., in the same callchain).
+      blocked = false;
+
+
+      // Lele: combine both tag and data into one packet
+      // Send it back
       pkt = combineRespPackets();
 
       dataPort.sendPacket(pkt);

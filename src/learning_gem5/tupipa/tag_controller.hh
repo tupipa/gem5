@@ -219,6 +219,11 @@ class TagController : public SimObject
     void sendRangeChange();
 
     /**
+     * Init _data/tag_max addresses
+     * */
+    bool initDataTagBoundary();
+
+    /**
      * Check whether the address stores tag or data
      */
     bool isTagAddr(Addr addr);
@@ -253,6 +258,11 @@ class TagController : public SimObject
     PacketPtr tag_resp_pkt;
     // Pointers to Data Packet for response
     PacketPtr data_resp_pkt;
+
+    Addr _data_max_addr;
+    Addr _tag_max_addr;
+    Addr _data_tag_address_diff;
+    bool has_max_set;
 
   public:
 
