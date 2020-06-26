@@ -102,6 +102,15 @@ parser.add_option("--reuse-trace", action="store_true",
 parser.add_option("--enable-shadow-tags", action="store_true",
                   help="Enable tag cache for shadow memory at L3 layer.")
 
+parser.add_option("--read-reqs-per-addr", action="store", type="int",
+                  default="8",
+                  help="Specify the number of read requests per address")
+
+parser.add_option("--write-reqs-per-addr", action="store", type="int",
+                  default="8",
+                  help="Specify the number of write requests per address")
+
+
 (options, args) = parser.parse_args()
 
 if args:
@@ -218,11 +227,25 @@ def create_trace(filename, max_addr, burst_size, itt):
     packet.cmd = 1
     packet.size = int(burst_size)
 
+    read_reqs_per_addr = options.read_reqs_per_addr
+    write_reqs_per_addr = options.write_reqs_per_addr
+
     for addr in addrs:
-        packet.tick = long(tick)
-        packet.addr = long(addr)
-        protolib.encodeMessage(proto_out, packet)
-        tick = tick + itt
+        for rqst in range(write_reqs_per_addr):
+            # WriteReq is 4 in src/mem/packet.hh Command enum
+            packet.cmd = 4
+            packet.tick = long(tick)
+            packet.addr = long(addr)
+            protolib.encodeMessage(proto_out, packet)
+            tick = tick + itt
+        for rqst in range(read_reqs_per_addr):
+            # ReadReq is 1 in src/mem/packet.hh Command enum
+            packet.cmd = 1
+            packet.tick = long(tick)
+            packet.addr = long(addr)
+            protolib.encodeMessage(proto_out, packet)
+            tick = tick + itt
+
 
     proto_out.close()
 
