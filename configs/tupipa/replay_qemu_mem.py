@@ -230,23 +230,42 @@ def create_trace(filename, max_addr, burst_size, itt):
     read_reqs_per_addr = options.read_reqs_per_addr
     write_reqs_per_addr = options.write_reqs_per_addr
 
+    write_left = write_reqs_per_addr
+
+    total_reqs = 0
+
     for addr in addrs:
-        for rqst in range(write_reqs_per_addr):
+
+      # generate a read req, and a following write if has write in options
+      for rqst in range(read_reqs_per_addr):
+         # ReadReq is 1 in src/mem/packet.hh Command enum
+         packet.cmd = 1
+         packet.tick = long(tick)
+         packet.addr = long(addr)
+         protolib.encodeMessage(proto_out, packet)
+         tick = tick + itt
+         total_reqs = total_reqs + 1
+
+         # generate a write
+         if (write_left > 0):
             # WriteReq is 4 in src/mem/packet.hh Command enum
             packet.cmd = 4
             packet.tick = long(tick)
             packet.addr = long(addr)
             protolib.encodeMessage(proto_out, packet)
             tick = tick + itt
-        for rqst in range(read_reqs_per_addr):
-            # ReadReq is 1 in src/mem/packet.hh Command enum
-            packet.cmd = 1
-            packet.tick = long(tick)
-            packet.addr = long(addr)
-            protolib.encodeMessage(proto_out, packet)
-            tick = tick + itt
+            write_left = write_left - 1
+            total_reqs = total_reqs + 1
+      for rqst in range(write_left):
+         # WriteReq is 4 in src/mem/packet.hh Command enum
+         packet.cmd = 4
+         packet.tick = long(tick)
+         packet.addr = long(addr)
+         protolib.encodeMessage(proto_out, packet)
+         tick = tick + itt
+         total_reqs = total_reqs + 1
 
-
+    print("Total number of requests in traces: ", str(total_reqs))
     proto_out.close()
 
 # this will take a while, so keep the user informed
