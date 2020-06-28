@@ -214,7 +214,10 @@ def create_trace(filename, max_addr, burst_size, itt):
     protolib.encodeMessage(proto_out, header)
 
     # create a list of every single address to touch
-    addrs = list(range(max_addr/2, max_addr, burst_size))
+    addrs_all = list(range(max_addr/2, max_addr, burst_size))
+
+    addrs = addrs_all[0:1]
+    total_addrs = len(addrs)
 
     import random
     random.shuffle(addrs)
@@ -265,6 +268,7 @@ def create_trace(filename, max_addr, burst_size, itt):
          tick = tick + itt
          total_reqs = total_reqs + 1
 
+    print("Total number of addr in traces: ", str(total_addrs))
     print("Total number of requests in traces: ", str(total_reqs))
     proto_out.close()
 
@@ -385,7 +389,9 @@ if (options.enable_shadow_tags):
 
     # Create Tag Cache that lives in the TagController
     # Follow a regular L3 Cache Size
-    tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
+    #tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
+    tag_cache = TagCache(size = '4MB', writeback_clean = True)
+
     tag_controller.tag_cache = tag_cache
 
     ########################
