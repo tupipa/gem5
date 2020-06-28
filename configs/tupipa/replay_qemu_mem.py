@@ -110,6 +110,10 @@ parser.add_option("--write-reqs-per-addr", action="store", type="int",
                   default="8",
                   help="Specify the number of write requests per address")
 
+parser.add_option("--tagcache-inclusive", action="store_true",
+                  help="Prevent generation of traces and reuse existing")
+
+
 
 (options, args) = parser.parse_args()
 
@@ -389,8 +393,12 @@ if (options.enable_shadow_tags):
 
     # Create Tag Cache that lives in the TagController
     # Follow a regular L3 Cache Size
-    #tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
-    tag_cache = TagCache(size = '4MB', writeback_clean = True)
+    if (options.tagcache_inclusive):
+        # inclusive tag cache
+        tag_cache = TagCache(size = '4MB', writeback_clean = True)
+    else:
+        # exclusive tag cache
+        tag_cache = TagCache(size = '4MB', clusivity = 'mostly_excl')
 
     tag_controller.tag_cache = tag_cache
 
