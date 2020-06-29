@@ -111,7 +111,15 @@ parser.add_option("--write-reqs-per-addr", action="store", type="int",
                   help="Specify the number of write requests per address")
 
 parser.add_option("--tagcache-inclusive", action="store_true",
-                  help="Prevent generation of traces and reuse existing")
+                  help="Set tag cache to be inclusive")
+
+parser.add_option("--write-first", action="store_true",
+                  help="do a write first for each address generated")
+
+parser.add_option("--one-write-only", action="store_true",
+                  help=("do one write only for each generated addr, "
+                      "must be used with --write-first"))
+
 
 
 
@@ -119,6 +127,10 @@ parser.add_option("--tagcache-inclusive", action="store_true",
 
 if args:
     print("Error: script doesn't take any positional arguments")
+    sys.exit(1)
+
+if (options.one_write_only and not options.write_first):
+    print("Error: --one-write-only must be used withe --write-first")
     sys.exit(1)
 
 # start by creating the system itself, using a multi-layer 2.0 GHz
@@ -241,11 +253,30 @@ def create_trace(filename, max_addr, burst_size, itt):
 
     total_reqs = 0
 
+    write_first = options.write_first
+
     for addr in addrs:
 
+      if (write_first):
+         # generate a write request
+         print("first generating a write request")
+         print("generating the ", str(total_reqs), " request (write), addr: "\
+                 , hex(addr))
+         packet.cmd = 4
+         packet.tick = long(tick)
+         packet.addr = long(addr)
+         protolib.encodeMessage(proto_out, packet)
+         tick = tick + itt
+         write_left = write_left - 1
+         total_reqs = total_reqs + 1
+
+      if (options.one_write_only):
+          break
       # generate a read req, and a following write if has write in options
       for rqst in range(read_reqs_per_addr):
          # ReadReq is 1 in src/mem/packet.hh Command enum
+         print("generating the ", str(total_reqs), " request (read), addr: "\
+                 , hex(addr))
          packet.cmd = 1
          packet.tick = long(tick)
          packet.addr = long(addr)
@@ -256,6 +287,8 @@ def create_trace(filename, max_addr, burst_size, itt):
          # generate a write
          if (write_left > 0):
             # WriteReq is 4 in src/mem/packet.hh Command enum
+            print("generating the ", str(total_reqs), \
+                    " request (write), addr:", hex(addr))
             packet.cmd = 4
             packet.tick = long(tick)
             packet.addr = long(addr)
@@ -264,6 +297,8 @@ def create_trace(filename, max_addr, burst_size, itt):
             write_left = write_left - 1
             total_reqs = total_reqs + 1
       for rqst in range(write_left):
+         print("generating the ", str(total_reqs), \
+                 " request (write), addr: ", hex(addr))
          # WriteReq is 4 in src/mem/packet.hh Command enum
          packet.cmd = 4
          packet.tick = long(tick)
