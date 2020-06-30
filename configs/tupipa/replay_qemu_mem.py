@@ -120,6 +120,11 @@ parser.add_option("--one-write-only", action="store_true",
                   help=("do one write only for each generated addr, "
                       "must be used with --write-first"))
 
+parser.add_option("--single-addr", action="store_true",
+                  help=("access one address only, for testing"))
+
+
+
 
 
 
@@ -232,7 +237,11 @@ def create_trace(filename, max_addr, burst_size, itt):
     # create a list of every single address to touch
     addrs_all = list(range(max_addr/2, max_addr, burst_size))
 
-    addrs = addrs_all[0:1]
+    if (options.single_addr):
+        addrs = addrs_all[0:1]
+    else:
+        addrs = addrs_all
+
     total_addrs = len(addrs)
 
     import random
@@ -316,7 +325,17 @@ print("Generating traces, please wait...")
 
 nxt_range = 0
 nxt_state = 0
-period = long(itt * (max_range / burst_size))
+reads = options.read_reqs_per_addr
+writes = options.write_reqs_per_addr
+
+if (options.write_first and options.one_write_only):
+    reads = 0
+    writes = 1
+
+if (options.single_addr):
+    period = long(itt * (reads + writes))
+else:
+    period = long(itt * (max_range / burst_size) * (reads + writes))
 
 # TODO now we create the states for the input file only
 for r in ranges:
