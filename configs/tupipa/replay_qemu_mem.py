@@ -264,13 +264,13 @@ def create_trace(filename, max_addr, burst_size, itt):
     read_reqs_per_addr = options.read_reqs_per_addr
     write_reqs_per_addr = options.write_reqs_per_addr
 
-    write_left = write_reqs_per_addr
-
     total_reqs = 0
 
     write_first = options.write_first
 
     for addr in addrs:
+
+      write_left = write_reqs_per_addr
 
       if (write_first):
          # generate a write request
@@ -506,6 +506,7 @@ else:
 system.system_port = system.membus.slave
 
 # every period, dump and reset all stats
+print("Every period(%d), dump and rest all stats" % period)
 periodicStatDump(period)
 
 # run Forrest, run!
