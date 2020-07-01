@@ -330,6 +330,11 @@ class Packet : public Printable
     */
     PacketDataPtr data;
 
+    /**
+     * Lele: the color of data
+     */
+    Addr _dataColor = 0;
+
     /// The address of the request.  This address could be virtual or
     /// physical, depending on the system configuration.
     Addr addr;
@@ -726,6 +731,16 @@ class Packet : public Printable
      * valid.
      */
     void setAddr(Addr _addr) { assert(flags.isSet(VALID_ADDR)); addr = _addr; }
+
+    /**
+     * Lele: get and set data color
+     */
+    Addr getDataColor() const {
+        return _dataColor;
+    }
+    void setDataColor(Addr dataColor){
+        _dataColor = dataColor;
+    }
 
     unsigned getSize() const  { assert(flags.isSet(VALID_SIZE)); return size; }
 
