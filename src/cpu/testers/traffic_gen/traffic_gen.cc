@@ -358,6 +358,9 @@ TrafficGen::nextGenerator()
     if (activeGenerator)
         currState = nextState();
 
+    DPRINTF(TrafficGen, "\n\n\n"
+                        "==============================="
+                        "\n\n");
     DPRINTF(TrafficGen, "Transition to state %d\n", currState);
     return states[currState];
 }
