@@ -280,7 +280,7 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.cmd = 4
          packet.tick = long(tick)
          packet.addr = long(addr)
-         packet.pc = long(addr)
+         packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          write_left = write_left - 1
@@ -296,7 +296,7 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.cmd = 1
          packet.tick = long(tick)
          packet.addr = long(addr)
-         packet.pc = long(addr)
+         packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          total_reqs = total_reqs + 1
@@ -309,7 +309,7 @@ def create_trace(filename, max_addr, burst_size, itt):
             packet.cmd = 4
             packet.tick = long(tick)
             packet.addr = long(addr)
-            packet.pc = long(addr)
+            packet.inst_color = long(addr)
             protolib.encodeMessage(proto_out, packet)
             tick = tick + itt
             write_left = write_left - 1
@@ -321,7 +321,7 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.cmd = 4
          packet.tick = long(tick)
          packet.addr = long(addr)
-         packet.pc = long(addr)
+         packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          total_reqs = total_reqs + 1
