@@ -2553,7 +2553,7 @@ DRAMCtrl::Rank::updatePowerStats()
 void
 DRAMCtrl::Rank::computeStats()
 {
-    DPRINTF(DRAM,"Computing stats due to a dump callback\n");
+    DPRINTF(DRAM,"****Computing stats due to a dump callback****\n");
 
     // Update the stats
     updatePowerStats();
