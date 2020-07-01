@@ -102,6 +102,10 @@ parser.add_option("--reuse-trace", action="store_true",
 parser.add_option("--enable-shadow-tags", action="store_true",
                   help="Enable tag cache for shadow memory at L3 layer.")
 
+parser.add_option("--req-size", action="store", type="int",
+                  default="64",
+                  help="Specify the size of memory rw request")
+
 parser.add_option("--read-reqs-per-addr", action="store", type="int",
                   default="8",
                   help="Specify the number of read requests per address")
@@ -253,7 +257,9 @@ def create_trace(filename, max_addr, burst_size, itt):
     packet = packet_pb2.Packet()
     # ReadReq is 1 in src/mem/packet.hh Command enum
     packet.cmd = 1
-    packet.size = int(burst_size)
+    #packet.size = int(burst_size)
+    # use 8 bytes word
+    packet.size = options.req_size
 
     read_reqs_per_addr = options.read_reqs_per_addr
     write_reqs_per_addr = options.write_reqs_per_addr
@@ -274,6 +280,7 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.cmd = 4
          packet.tick = long(tick)
          packet.addr = long(addr)
+         packet.pc = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          write_left = write_left - 1
@@ -284,11 +291,12 @@ def create_trace(filename, max_addr, burst_size, itt):
       # generate a read req, and a following write if has write in options
       for rqst in range(read_reqs_per_addr):
          # ReadReq is 1 in src/mem/packet.hh Command enum
-         print("generating the ", str(total_reqs), " request (read), addr: "\
-                 , hex(addr))
+         #print("generating the ", str(total_reqs), " request (read), addr: "\
+         #        , hex(addr))
          packet.cmd = 1
          packet.tick = long(tick)
          packet.addr = long(addr)
+         packet.pc = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          total_reqs = total_reqs + 1
@@ -296,22 +304,24 @@ def create_trace(filename, max_addr, burst_size, itt):
          # generate a write
          if (write_left > 0):
             # WriteReq is 4 in src/mem/packet.hh Command enum
-            print("generating the ", str(total_reqs), \
-                    " request (write), addr:", hex(addr))
+            #print("generating the ", str(total_reqs), \
+            #        " request (write), addr:", hex(addr))
             packet.cmd = 4
             packet.tick = long(tick)
             packet.addr = long(addr)
+            packet.pc = long(addr)
             protolib.encodeMessage(proto_out, packet)
             tick = tick + itt
             write_left = write_left - 1
             total_reqs = total_reqs + 1
       for rqst in range(write_left):
-         print("generating the ", str(total_reqs), \
-                 " request (write), addr: ", hex(addr))
+         #print("generating the ", str(total_reqs), \
+         #        " request (write), addr: ", hex(addr))
          # WriteReq is 4 in src/mem/packet.hh Command enum
          packet.cmd = 4
          packet.tick = long(tick)
          packet.addr = long(addr)
+         packet.pc = long(addr)
          protolib.encodeMessage(proto_out, packet)
          tick = tick + itt
          total_reqs = total_reqs + 1
