@@ -220,9 +220,11 @@ itt = 150 * 1000
 # sequence, so that we can play back the same sequence for warming and
 # the actual measurement
 def create_trace(filename, max_addr, burst_size, itt):
+    filename_txt = filename + '.txt'
     try:
         print("Trying to open file ", filename)
         proto_out = gzip.open(filename, 'wb')
+        txt_out = open(filename_txt, 'wb')
     except IOError:
         print("Failed to open ", filename, " for writing")
         exit(-1)
@@ -230,6 +232,7 @@ def create_trace(filename, max_addr, burst_size, itt):
     # write the magic number in 4-byte Little Endian, similar to what
     # is done in src/proto/protoio.cc
     proto_out.write("gem5")
+    txt_out.write("gem5\n")
 
     # add the packet header
     header = packet_pb2.PacketHeader()
@@ -282,6 +285,8 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.addr = long(addr)
          packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
+         txt_out.write('w ' + str(tick) + ' ' + hex(addr) + ' ' \
+            + str(packet.size) + ' ' + hex(addr) + '\n')
          tick = tick + itt
          write_left = write_left - 1
          total_reqs = total_reqs + 1
@@ -298,6 +303,8 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.addr = long(addr)
          packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
+         txt_out.write('r ' + str(tick) + ' ' + hex(addr) + ' ' \
+            + str(packet.size) + ' ' + hex(addr) + '\n')
          tick = tick + itt
          total_reqs = total_reqs + 1
 
@@ -311,6 +318,8 @@ def create_trace(filename, max_addr, burst_size, itt):
             packet.addr = long(addr)
             packet.inst_color = long(addr)
             protolib.encodeMessage(proto_out, packet)
+            txt_out.write('w ' + str(tick) + ' ' + hex(addr) + ' ' \
+                + str(packet.size) + ' ' + hex(addr) + '\n')
             tick = tick + itt
             write_left = write_left - 1
             total_reqs = total_reqs + 1
@@ -323,15 +332,15 @@ def create_trace(filename, max_addr, burst_size, itt):
          packet.addr = long(addr)
          packet.inst_color = long(addr)
          protolib.encodeMessage(proto_out, packet)
+         txt_out.write('w ' + str(tick) + ' ' + hex(addr) + ' ' \
+            + str(packet.size) + ' ' + hex(addr) + '\n')
          tick = tick + itt
          total_reqs = total_reqs + 1
 
     print("Total number of addr in traces: ", str(total_addrs))
     print("Total number of requests in traces: ", str(total_reqs))
     proto_out.close()
-
-# this will take a while, so keep the user informed
-print("Generating traces, please wait...")
+    txt_out.close()
 
 nxt_range = 0
 nxt_state = 0
@@ -342,10 +351,11 @@ if (options.write_first and options.one_write_only):
     reads = 0
     writes = 1
 
+# compute period = <req interval> * <no. of address> * <no of req per addr>
 if (options.single_addr):
     period = long(itt * (reads + writes))
 else:
-    period = long(itt * (max_range / burst_size) * (reads + writes))
+    period = long(itt * (max_range / 2 / burst_size) * (reads + writes))
 
 # TODO now we create the states for the input file only
 for r in ranges:
@@ -353,6 +363,8 @@ for r in ranges:
                             'lat_mem_rd%d.trc.gz' % nxt_range)
 
     if not options.reuse_trace:
+        # this will take a while, so keep the user informed
+        print("Generating traces, please wait...")
         # create the actual random trace for this range
         create_trace(filename, r, burst_size, itt)
 
