@@ -211,7 +211,8 @@ iterations = 2
 
 # 150 ns in ticks, this is choosen to be high enough that transactions
 # do not pile up in the system, adjust if needed
-itt = 150 * 1000
+# itt = 150 * 1000
+itt = 600 * 1000
 
 # TODO: read trace from qemu-generated tracing data and write to
 # traffic_gen compatitble format
@@ -355,7 +356,7 @@ if (options.write_first and options.one_write_only):
 if (options.single_addr):
     period = long(itt * (reads + writes))
 else:
-    period = long(itt * (max_range / 2 / burst_size) * (reads + writes))
+    period = long(itt * (max_range / 2 / burst_size) * (reads + writes + 1))
 
 # TODO now we create the states for the input file only
 for r in ranges:
@@ -449,7 +450,14 @@ system.l1cache = L1_DCache(size = '64kB')
 # Monitor (master) --> l1cache (slave)
 system.monitor.master = system.l1cache.cpu_side
 
-system.l2cache = L2Cache(size = '512kB', writeback_clean = True)
+# writeback_clean is helpful for most-exclusive l3 cache
+# Here we do not have a regular exclusive l3 cache for these data,
+# But if we have a excl tag cache, it might be better to send a write back
+# on clean line when got evicted.
+if (options.tagcache_inclusive):
+    system.l2cache = L2Cache(size = '512kB')
+else:
+    system.l2cache = L2Cache(size = '512kB', writeback_clean = True)
 
 # Connect L1 -- xbar -- L2
 # L1 cache.mem_side (master) --> (slave) l2cache.xbar (master) -- L2.cpu_side
