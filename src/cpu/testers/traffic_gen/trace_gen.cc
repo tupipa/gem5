@@ -118,6 +118,7 @@ TraceGen::enter()
     // update the trace offset to the time where the state was entered.
     tickOffset = curTick();
 
+    DPRINTF(TrafficGen, "TraceGen::enter: new tickOffset %d \n",tickOffset);
     // clear everything
     currElement.clear();
 
@@ -177,6 +178,7 @@ TraceGen::exit()
              name());
     }
 
+    DPRINTF(TrafficGen, "TraceGen::exit: start over again\n");
     // Clear any flags and start over again from the beginning of the
     // file
     trace.reset();
