@@ -235,6 +235,8 @@ TagController::handleRequest(PacketPtr pkt)
 {
     if (blocked) {
         // There is currently an outstanding request. Stall.
+        DPRINTF(TagController,
+          "WARNING: Cannot handle request while blocked: %s\n", pkt->print());
         return false;
     }
 
@@ -265,8 +267,15 @@ TagController::handleRequest(PacketPtr pkt)
         DPRINTF(TagController,
           "Got valid request for addr %#x\n", pkt->getAddr());
     }
-    // This memobj is now blocked waiting for the response to this packet.
-    blocked = true;
+    // Lele: check needResponse()
+    // if response needed, block the tag controller to wait for
+    // the response to this packet.
+    if (pkt->needsResponse()){
+       blocked = true;
+    }else{
+       DPRINTF(TagController,
+          "No response needed, so no blocking %s\n", pkt->print());
+    }
 
     Addr newAddr = pkt->getAddr() - _data_tag_address_diff;
 
