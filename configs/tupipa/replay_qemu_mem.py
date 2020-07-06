@@ -38,6 +38,9 @@
 from __future__ import print_function
 from __future__ import absolute_import
 
+import bz2  # bz2 for qemu trace
+from PhysicalTraceRecord import *
+
 import gzip
 import six
 import optparse
@@ -103,7 +106,7 @@ parser.add_option("--enable-shadow-tags", action="store_true",
                   help="Enable tag cache for shadow memory at L3 layer.")
 
 parser.add_option("--req-size", action="store", type="int",
-                  default="64",
+                  default=None,
                   help="Specify the size of memory rw request")
 
 parser.add_option("--read-reqs-per-addr", action="store", type="int",
@@ -127,9 +130,9 @@ parser.add_option("--one-write-only", action="store_true",
 parser.add_option("--single-addr", action="store_true",
                   help=("access one address only, for testing"))
 
-
-
-
+parser.add_option("--qemu-trace", action="store", type="string",
+                  default="m5out/qemu_trace/test.txt",
+                  help="Specify the qemu memory trace file")
 
 
 (options, args) = parser.parse_args()
@@ -216,6 +219,106 @@ itt = 600 * 1000
 
 # TODO: read trace from qemu-generated tracing data and write to
 # traffic_gen compatitble format
+
+def load_qemu_trace(qemu_trace_in):
+
+    for line in qemu_trace_in:
+        print("got a line: ", line)
+        line = line.strip()
+        if (line == ''):
+            continue
+        record = PhysicalTraceRecord()
+        record.init_with_str_record(line)
+        yield record
+
+
+def create_trace_from_qemu(filename, qemu_trace, itt):
+
+    # 2GB memory for qemu guest memory
+
+    max_addr = 2048 * 1024 * 1024
+    filename_txt = filename + '.txt'
+    try:
+        print("Trying to open file ", filename)
+        proto_out = gzip.open(filename, 'wb')
+        txt_out = open(filename_txt, 'wb')
+    except IOError:
+        print("Failed to open ", filename, " for writing")
+        exit(-1)
+
+    # write the magic number in 4-byte Little Endian, similar to what
+    # is done in src/proto/protoio.cc
+    proto_out.write("gem5")
+    txt_out.write("gem5\n")
+
+    # add the packet header
+    header = packet_pb2.PacketHeader()
+    header.obj_id = "lat_mem_rd for range 0:" + str(max_addr)
+    # assume the default tick rate (1 ps)
+    header.tick_freq = 1000000000000
+    protolib.encodeMessage(proto_out, header)
+
+    tick = 0
+
+    # create a packet we can re-use for all the addresses
+    packet = packet_pb2.Packet()
+    # ReadReq is 1 in src/mem/packet.hh Command enum
+    # packet.cmd = 1
+    #packet.size = int(burst_size)
+    # use 8 bytes word
+    packet.size = options.req_size
+
+    total_reqs = 0
+
+    ######################################################
+    # Loading request from QEMU trace
+    # Parsing the request and convert into Gem5 Trace
+    ######################################################
+
+    print("loading requests from qemu trace: ", qemu_trace)
+
+    try:
+    #   qemu_trace_in = bz2.BZ2File(qemu_trace, 'rt')
+      qemu_trace_in = open(qemu_trace, 'r')
+    except:
+        print("Failed to open bz2 file: ", qemu_trace, " for reading")
+        exit(-1)
+
+    print("qemu_trace file opened: ", qemu_trace)
+
+    # exit(1)
+    for qemu_record in load_qemu_trace(qemu_trace_in):
+
+        # generate a request from qemu record
+
+        # parse read or write
+        if (qemu_record.rw == 'r'):
+            packet.cmd = 1
+        elif (qemu_record.rw == 'w'):
+            packet.cmd = 4
+
+        # pass the addr and instcolor
+        packet.addr = long(qemu_record.paddr)
+        packet.inst_color = long(qemu_record.instcolor)
+        if (options.req_size == None):
+            packet.size = long(qemu_record.size)
+
+        packet.tick = long(tick)
+
+        print("generating the ", str(total_reqs), " request (%s), addr: %s" % \
+            ( qemu_record.rw, hex(qemu_record.paddr)))
+
+        protolib.encodeMessage(proto_out, packet)
+        txt_out.write( str(tick) + ' ' + str(qemu_record) + '\n')
+
+        tick = tick + itt
+        total_reqs = total_reqs + 1
+
+    print("Total number of requests in traces: ", str(total_reqs))
+    proto_out.close()
+    txt_out.close()
+    qemu_trace_in.close()
+
 #
 # for every data point, we create a trace containing a random address
 # sequence, so that we can play back the same sequence for warming and
@@ -363,11 +466,15 @@ for r in ranges:
     filename = os.path.join(m5.options.outdir,
                             'lat_mem_rd%d.trc.gz' % nxt_range)
 
+    qemu_trace = options.qemu_trace
+
     if not options.reuse_trace:
         # this will take a while, so keep the user informed
         print("Generating traces, please wait...")
         # create the actual random trace for this range
-        create_trace(filename, r, burst_size, itt)
+        # create_trace(filename, r, burst_size, itt)
+        create_trace_from_qemu(filename, qemu_trace, itt)
+        print("done generating traces")
 
     # the warming state
     cfg_file.write("STATE %d %d TRACE %s 0\n" %
