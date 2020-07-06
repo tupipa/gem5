@@ -1,7 +1,7 @@
 # Copyright (c) 2015-2016 ARM Limited
 # All rights reserved.
 #
-# Lele Ma, 2020-06-19
+# modified by Lele Ma, 2020-06-19
 #
 # The license below extends only to copyright in the software and shall
 # not be construed as granting a license to any other intellectual
@@ -38,13 +38,13 @@
 from __future__ import print_function
 from __future__ import absolute_import
 
-import bz2  # bz2 for qemu trace
-from PhysicalTraceRecord import *
-
 import gzip
 import six
 import optparse
 import os
+
+import bz2  # bz2 for qemu trace
+from PhysicalTraceRecord import *
 
 import m5
 from m5.objects import *
@@ -134,6 +134,9 @@ parser.add_option("--qemu-trace", action="store", type="string",
                   default="m5out/qemu_trace/test.txt",
                   help="Specify the qemu memory trace file")
 
+parser.add_option("--random-trace", action="store_true",
+                  help="Use/generate random trace instead of QEMU trace")
+
 
 (options, args) = parser.parse_args()
 
@@ -180,11 +183,6 @@ for ctrl in system.mem_ctrls:
         # latency spikes
         ctrl.tREFI = '100s'
 
-# use the same concept as the utilisation sweep, and print the config
-# so that we can later read it in
-cfg_file_name = os.path.join(m5.options.outdir, "lat_mem_rd.cfg")
-cfg_file = open(cfg_file_name, 'w')
-
 # set an appropriate burst length in bytes
 burst_size = 64
 system.cache_line_size = burst_size
@@ -223,8 +221,8 @@ itt = 600 * 1000
 def load_qemu_trace(qemu_trace_in):
 
     for line in qemu_trace_in:
-        print("got a line: ", line)
         line = line.strip()
+        print("got a line: ", line)
         if (line == ''):
             continue
         record = PhysicalTraceRecord()
@@ -238,6 +236,7 @@ def create_trace_from_qemu(filename, qemu_trace, itt):
 
     max_addr = 2048 * 1024 * 1024
     filename_txt = filename + '.txt'
+
     try:
         print("Trying to open file ", filename)
         proto_out = gzip.open(filename, 'wb')
@@ -318,6 +317,7 @@ def create_trace_from_qemu(filename, qemu_trace, itt):
     proto_out.close()
     txt_out.close()
     qemu_trace_in.close()
+    return total_reqs
 
 #
 # for every data point, we create a trace containing a random address
@@ -445,59 +445,102 @@ def create_trace(filename, max_addr, burst_size, itt):
     print("Total number of requests in traces: ", str(total_reqs))
     proto_out.close()
     txt_out.close()
+    return total_reqs
 
-nxt_range = 0
-nxt_state = 0
-reads = options.read_reqs_per_addr
-writes = options.write_reqs_per_addr
+# set up gem5 trace file
+# create one if not --reuse-trace
+# create from QEMU generated trace by default, but if --random-trance is given,
+# will generate random trace
+def setup_gem5_trace(gem5_trace_file, max_addr, burst_size, itt):
 
-if (options.write_first and options.one_write_only):
-    reads = 0
-    writes = 1
+  qemu_trace = options.qemu_trace
 
-# compute period = <req interval> * <no. of address> * <no of req per addr>
-if (options.single_addr):
-    period = long(itt * (reads + writes))
-else:
-    period = long(itt * (max_range / 2 / burst_size) * (reads + writes + 1))
+  if not options.reuse_trace:
+    # this will take a while, so keep the user informed
+    print("Generating traces, please wait...")
+    # create the actual random trace for this range
+    if options.random_trace:
+        total_reqs = create_trace(gem5_trace_file, max_addr, burst_size, itt)
+    else:
+        total_reqs = create_trace_from_qemu(gem5_trace_file, qemu_trace, itt)
 
-# TODO now we create the states for the input file only
-for r in ranges:
-    filename = os.path.join(m5.options.outdir,
-                            'lat_mem_rd%d.trc.gz' % nxt_range)
+    # write total request to a file for future use.
+    write_trace_total_to_file(gem5_trace_file, total_reqs)
 
-    qemu_trace = options.qemu_trace
+    print("done generating traces")
 
-    if not options.reuse_trace:
-        # this will take a while, so keep the user informed
-        print("Generating traces, please wait...")
-        # create the actual random trace for this range
-        # create_trace(filename, r, burst_size, itt)
-        create_trace_from_qemu(filename, qemu_trace, itt)
-        print("done generating traces")
+# configure Traffic Gen
+# create cfg file for traffic gen.
+def setup_tgen_cfg_file(cfg_file, gem5_trace_file, period):
 
+    # use the same concept as the utilisation sweep, and print the config
+    # so that we can later read it in
+    cfg_file = open(cfg_file, 'w')
+
+    nxt_state = 0
     # the warming state
     cfg_file.write("STATE %d %d TRACE %s 0\n" %
-                   (nxt_state, period, filename))
+                   (nxt_state, period, gem5_trace_file))
     nxt_state = nxt_state + 1
 
     # the measuring states
     for i in range(iterations):
         cfg_file.write("STATE %d %d TRACE %s 0\n" %
-                       (nxt_state, period, filename))
+                       (nxt_state, period, gem5_trace_file))
         nxt_state = nxt_state + 1
 
-    nxt_range = nxt_range + 1
+    cfg_file.write("INIT 0\n")
 
-cfg_file.write("INIT 0\n")
+    # go through the states one by one
+    for state in range(1, nxt_state):
+        cfg_file.write("TRANSITION %d %d 1\n" % (state - 1, state))
 
-# go through the states one by one
-for state in range(1, nxt_state):
-    cfg_file.write("TRANSITION %d %d 1\n" % (state - 1, state))
+    cfg_file.write("TRANSITION %d %d 1\n" % (nxt_state - 1, nxt_state - 1))
 
-cfg_file.write("TRANSITION %d %d 1\n" % (nxt_state - 1, nxt_state - 1))
+    cfg_file.close()
 
-cfg_file.close()
+    return nxt_state
+
+
+def write_trace_total_to_file(gem5_trace_file_name, total_reqs):
+    # write total to text as file-total.txt
+    total_file = gem5_trace_file_name + '-total.txt'
+    with open(total_file, 'w') as total_fileobj:
+        # write the total number as the first line
+        total_fileobj.write(str(total_reqs) + '\n')
+
+    print("done write %s to file: %s" % (str(total_reqs), total_file))
+
+def load_trace_total_from_file(gem5_trace_file_name):
+    # read total num of trace from file file-total.txt
+    total_file = gem5_trace_file_name + '-total.txt'
+    with open(total_file, 'r') as total_fileobj:
+        # read the first line as total number
+        num_str = total_fileobj.readline().strip()
+
+    total_reqs = int(num_str)
+
+    print("done read total_reqs %s from file: %s" % \
+         (str(total_reqs), total_file))
+
+    return total_reqs
+
+cfg_file_name = os.path.join(m5.options.outdir, "lat_mem_rd.cfg")
+
+gem5_trace_file_name = os.path.join(m5.options.outdir,
+                            'lat_mem_rd.trc.gz')
+
+# check the gem5 trace, generate one if necessary.
+setup_gem5_trace(gem5_trace_file_name, max_range, burst_size, itt)
+
+# compute period according to total number of gem5 traces
+#  <req interval> * <no. of traces>
+total_num_of_traces = load_trace_total_from_file(gem5_trace_file_name)
+period = long(itt * (total_num_of_traces + 1))
+
+# setup configure file for
+nxt_state = setup_tgen_cfg_file(cfg_file_name,
+            gem5_trace_file_name, period)
 
 # create a traffic generator, and point it to the file we just created
 system.tgen = TrafficGen(config_file = cfg_file_name,
