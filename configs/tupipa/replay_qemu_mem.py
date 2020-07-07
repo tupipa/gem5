@@ -230,11 +230,13 @@ def load_qemu_trace(qemu_trace_in):
         yield record
 
 
-def create_trace_from_qemu(filename, qemu_trace, itt):
+def create_trace_from_qemu(filename, qemu_trace, max_addr, itt):
 
-    # 2GB memory for qemu guest memory
+    half_max = max_addr / 2
+    print("----------------------------------------")
+    print("all addr in qemu trace are added by " + hex(half_max))
+    print("----------------------------------------")
 
-    max_addr = 2048 * 1024 * 1024
     filename_txt = filename + '.txt'
 
     try:
@@ -297,7 +299,8 @@ def create_trace_from_qemu(filename, qemu_trace, itt):
             packet.cmd = 4
 
         # pass the addr and instcolor
-        packet.addr = long(qemu_record.paddr)
+        addr = long(qemu_record.paddr) + half_max
+        packet.addr = addr
         packet.inst_color = long(qemu_record.instcolor)
         if (options.req_size == None):
             packet.size = long(qemu_record.size)
@@ -305,7 +308,7 @@ def create_trace_from_qemu(filename, qemu_trace, itt):
         packet.tick = long(tick)
 
         print("generating the ", str(total_reqs), " request (%s), addr: %s" % \
-            ( qemu_record.rw, hex(qemu_record.paddr)))
+            ( qemu_record.rw, hex(addr)))
 
         protolib.encodeMessage(proto_out, packet)
         txt_out.write( str(tick) + ' ' + str(qemu_record) + '\n')
@@ -462,7 +465,8 @@ def setup_gem5_trace(gem5_trace_file, max_addr, burst_size, itt):
     if options.random_trace:
         total_reqs = create_trace(gem5_trace_file, max_addr, burst_size, itt)
     else:
-        total_reqs = create_trace_from_qemu(gem5_trace_file, qemu_trace, itt)
+        total_reqs = create_trace_from_qemu(gem5_trace_file,
+                                            qemu_trace, max_addr, itt)
 
     # write total request to a file for future use.
     write_trace_total_to_file(gem5_trace_file, total_reqs)
