@@ -95,14 +95,18 @@ def print_filtered_dumps(filtered_dumps, filter):
     all_dumps_without_key = ''
     for key in filter:
         key_values = ''
+        # search the key in all dumps one by one
         for idx in range(len(filtered_dumps)):
             cur_dump = filtered_dumps[idx]
             if key in cur_dump:
-                key_values = key_values + "\t" + cur_dump[key]
+                # found the key in the dump, grab value
+                key_values = key_values  + cur_dump[key] + '\t'
             else:
-                key_values = key_values + '\t-'
-        key_values = key_values + '\n'
-        all_dumps = all_dumps + key + key_values
+                # key not found in the dump, use '-' to mark unavailable
+                key_values = key_values + '-\t'
+        # remove the last \t and add \n to break the line for each key_values
+        key_values = key_values.strip() + '\n'
+        all_dumps = all_dumps + key + '\t' + key_values
         all_dumps_without_key = all_dumps_without_key + key_values
 
     print(all_dumps)

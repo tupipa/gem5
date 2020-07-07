@@ -131,7 +131,7 @@ parser.add_option("--single-addr", action="store_true",
                   help=("access one address only, for testing"))
 
 parser.add_option("--qemu-trace", action="store", type="string",
-                  default="m5out/qemu_trace/test.txt.bz2",
+                  default="qemu_trace/test.txt.bz2",
                   help="Specify the qemu memory trace file")
 
 parser.add_option("--random-trace", action="store_true",
