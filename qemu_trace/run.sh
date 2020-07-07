@@ -7,8 +7,19 @@
 gem5_root="$HOME/lab/cheri/beri/tag-sim/gem5"
 gem5_bin="./build/X86/gem5.opt"
 gem5_config="configs/tupipa/replay_qemu_mem.py"
-gem5_qemu_trace="--qemu-trace=qemu_trace/test.txt.bz2"
-gem5_common_options="--mem-size=4096MB --req-size=1 $gem5_qemu_trace"
+gem5_common_options="--mem-size=4096MB --req-size=1"
+
+# QEMU trace setup
+qemu_trace_dir="qemu_trace"
+qemu_trace_file_name="test.txt.bz2"
+qemu_trace_file="$qemu_trace_dir/$qemu_trace_file_name"
+
+gem5_qemu_trace="--qemu-trace=$qemu_trace_file"
+
+# log back up dir for each trace file
+log_backup_dir="$qemu_trace_file-m5out"
+
+
 
 debug_flags="Cache,TagController,CoherentXBar,DRAM,MemoryAccess,Checkpoint,TrafficGen"
 
@@ -28,7 +39,6 @@ out_console_grep="m5out/console-grep.md"
 backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_cfg"
 backup_file_list="$backup_file_list $out_config_ini $out_config_json"
 backup_file_list="$backup_file_list $out_total"
-log_backup_dir="test/"
 
 # Done Configurable zones in this script
 ##############################################
@@ -78,22 +88,27 @@ function run_cmd() {
 
 function post_run {
 
+    # a subdirectory must be given to store the output stats
+    subdir="$1"
+
+    backup_dir="$log_backup_dir/$subdir"
+
     run_cmd "python $gem5_stats_filter $out_stats" "$out_stats_filt"
     run_cmd "grep -a200 '=====================' $out_console_sink" "$out_console_grep"
 
     # check log back dir, warning if exist
-    if [ -d $log_backup_dir ]; then
-	    echo "WARNING: back dir $log_backup_dir already exist, will be overwritten"
+    if [ -d $backup_dir ]; then
+	    echo "WARNING: back dir $backup_dir already exist, will be overwritten"
     else
-	    echo "creating log back dir: $log_backup_dir"
-	    run_cmd "mkdir -p $log_backup_dir"
+	    echo "creating log back dir: $backup_dir"
+	    run_cmd "mkdir -p $backup_dir"
     fi
 
-    #dir_assert $log_backup_dir
+    dir_assert $backup_dir
 
     for item in $backup_file_list; do
       exist_assert $item
-      run_cmd "cp -a $item $log_backup_dir"
+      run_cmd "cp -a $item $backup_dir/"
     done
 
 }
@@ -102,7 +117,7 @@ function run_notag {
 
     init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options"
+    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
 
     pipe_out="$out_console_sink"
 
@@ -118,7 +133,7 @@ function run_notag {
     fi
     run_cmd "$cmd" "$pipe_out"
 
-    post_run
+    post_run "notag"
 
 }
 
@@ -126,7 +141,7 @@ function run_tag_excl {
 
     init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options"
+    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
     cmd="$cmd --enable-shadow-tags"
 
     pipe_out="$out_console_sink"
@@ -143,7 +158,7 @@ function run_tag_excl {
 
     run_cmd "$cmd" "$pipe_out"
 
-    post_run
+    post_run "tag_excl"
 
 }
 
@@ -152,7 +167,7 @@ function run_tag_incl {
 
     init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options"
+    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
     cmd="$cmd --enable-shadow-tags --tagcache-inclusive"
 
     pipe_out="$out_console_sink"
@@ -170,7 +185,7 @@ function run_tag_incl {
 
     run_cmd "$cmd" "$pipe_out"
 
-    post_run
+    post_run "tag_incl"
 
 }
 
