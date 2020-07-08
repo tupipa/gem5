@@ -3,6 +3,10 @@
 function Usage() {
  echo "Usage:"
  echo "$0 <trace-file> [recreate trace option]"
+ echo "<trace-file>: this must be a qemu trace file that contains"
+ echo "     only physical addresses. Format definition in"
+ echo "     PhysicalTraceRecord.py"
+
  echo "option:"
  echo "  0, no need to create new gem5 trace from qemu trace"
  echo "  1, create new gem5 trace from qemu"
