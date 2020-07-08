@@ -70,13 +70,13 @@ function post_run {
     # check the console output grep result,
     # if no three lines of iteration pattern '======'
     # probably an error, stop here
-    lines=$(grep '$grep_str' $out_console_grep | wc -l)
+    lines=$(eval "grep '$grep_str' $out_console_grep" | wc -l)
     if [ "$lines" -lt "3" ];then
-	   echo "$out_console_grep has less than 3 iterations"
-	   echo "Error occured during gem5 execution, please check"
-	   exit 1
+        echo "$out_console_grep has $lines (less than 3) iterations"
+        echo "Error occured during gem5 execution, please check"
+        exit 1
     else
-	   echo "Gem5 succeed, now collecting data and backup to $backup_dir"
+	echo "Gem5 succeed ($lines iter lines), now collecting data and backup to $backup_dir"
     fi 
 
     # check log back dir, warning if exist
@@ -95,29 +95,6 @@ function post_run {
     done
 
 }
-
-
-# function backup_common {
-
-#     backup_dir="$1"
-
-#     # check log back dir, warning if exist
-#     if [ -d $backup_dir ]; then
-# 	    echo "copy commonly shared files into $backup_dir"
-#     else
-# 	    echo "Error: back dir: $backup_dir does not exist"
-# 	    exit 1
-#     fi
-
-#     dir_assert $backup_dir
-
-#     for item in $backup_file_list_common; do
-#       exist_assert $item
-#       run_cmd "cp -a $item $backup_dir/"
-#     done
-
-  
-# }
 
 function run_notag {
 
@@ -318,5 +295,8 @@ fi
 run_tag_excl "$create_new_trace"
 run_tag_incl 0
 run_notag 0
-# backup_common "$log_backup_dir"
+
+# test post_run
+#post_run "tag_excl"
+
 
