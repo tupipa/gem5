@@ -243,6 +243,8 @@ def create_trace_from_qemu(filename, qemu_trace, max_addr, itt):
 
     filename_txt = filename + '.txt'
 
+    addr_dict = {}
+
     try:
         print("Trying to open file ", filename)
         proto_out = gzip.open(filename, 'wb')
@@ -305,6 +307,11 @@ def create_trace_from_qemu(filename, qemu_trace, max_addr, itt):
         # pass the addr and instcolor
         addr = long(qemu_record.paddr) + half_max
         packet.addr = addr
+        if addr in addr_dict:
+            addr_dict[addr] = addr_dict[addr] + 1
+        else:
+            addr_dict[addr] = 1
+
         packet.inst_color = long(qemu_record.instcolor)
         if (options.req_size == None):
             packet.size = long(qemu_record.size)
@@ -324,7 +331,7 @@ def create_trace_from_qemu(filename, qemu_trace, max_addr, itt):
     proto_out.close()
     txt_out.close()
     qemu_trace_in.close()
-    return total_reqs
+    return (addr_dict, total_reqs)
 
 #
 # for every data point, we create a trace containing a random address
@@ -466,16 +473,20 @@ def setup_gem5_trace(gem5_trace_file, max_addr, burst_size, itt):
     # this will take a while, so keep the user informed
     print("Generating traces, please wait...")
     # create the actual random trace for this range
+    total_reqs = 0
+    addr_dict = {}
     if options.random_trace:
         total_reqs = create_trace(gem5_trace_file, max_addr, burst_size, itt)
     else:
-        total_reqs = create_trace_from_qemu(gem5_trace_file,
+        (addr_dict, total_reqs) = create_trace_from_qemu(gem5_trace_file,
                                             qemu_trace, max_addr, itt)
 
     # write total request to a file for future use.
     write_trace_total_to_file(gem5_trace_file, total_reqs)
+    write_addr_total_to_file(gem5_trace_file, addr_dict)
 
     print("done generating traces")
+    #exit(1)
 
 # configure Traffic Gen
 # create cfg file for traffic gen.
@@ -533,6 +544,51 @@ def load_trace_total_from_file(gem5_trace_file_name):
 
     return total_reqs
 
+def write_addr_total_to_file(gem5_trace_file_name, addr_dict):
+    # write total to text as file-total.txt
+    total_file = gem5_trace_file_name + '-total-addr.txt'
+    len_str=str(len(addr_dict))
+    with open(total_file, 'w') as total_fileobj:
+        # write the total number as the first line
+        total_fileobj.write(len_str + '\n')
+
+        # write all addresses in sorted list
+        # group them into diff pages
+        cur_page_num = 0
+        cur_page_addrs = 0
+        cur_page_accesses = 0
+        for addr in sorted (addr_dict.keys()):
+            page_num = addr >> 12
+            # now switched to a new page's address
+            # print out the old page data
+            if (cur_page_num != page_num):
+                total_fileobj.write('Page: ' + hex(cur_page_num))
+                total_fileobj.write(' ' + str(cur_page_addrs))
+                total_fileobj.write(' ' + str(cur_page_accesses) + '\n')
+                cur_page_addrs = 0
+                cur_page_accesses = 0
+                cur_page_num = page_num
+            total_fileobj.write(hex(addr) + ' ' + str(addr_dict[addr]) + '\n')
+            cur_page_addrs += 1
+            cur_page_accesses += addr_dict[addr]
+
+    print("done write %s and all addrs to file: %s" % (len_str, total_file))
+
+def load_addr_total_from_file(gem5_trace_file_name):
+    # read total num of trace from file file-total.txt
+    total_file = gem5_trace_file_name + '-total-addr.txt'
+    with open(total_file, 'r') as total_fileobj:
+        # read the first line as total number
+        num_str = total_fileobj.readline().strip()
+
+    total_addrs = int(num_str)
+
+    print("done read total_addrs %s from file: %s" % \
+         (str(total_addrs), total_file))
+
+    return total_addrs
+
+
 cfg_file_name = os.path.join(m5.options.outdir, "traffic-gen.cfg")
 
 gem5_trace_file_name = options.gem5_trace
@@ -543,7 +599,12 @@ setup_gem5_trace(gem5_trace_file_name, max_range, burst_size, itt)
 # compute period according to total number of gem5 traces
 #  <req interval> * <no. of traces>
 total_num_of_traces = load_trace_total_from_file(gem5_trace_file_name)
+total_num_of_addrs = load_addr_total_from_file(gem5_trace_file_name)
 period = long(itt * (total_num_of_traces + 1))
+print("total num of traces: %s" % str(total_num_of_traces))
+print("total num of addresses: %s" % str(total_num_of_addrs))
+print("ticks for each iteration: %s" % str(period))
+
 
 # setup configure file for
 nxt_state = setup_tgen_cfg_file(cfg_file_name,
