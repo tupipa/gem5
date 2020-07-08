@@ -1,47 +1,13 @@
 #!/bin/bash
 
-#######################################
-# Configurable variables in this script
-#
-# Gem5 setup
-gem5_root="$HOME/lab/cheri/beri/tag-sim/gem5"
-gem5_bin="./build/X86/gem5.opt"
-gem5_config="configs/tupipa/replay_qemu_mem.py"
-gem5_common_options="--mem-size=4096MB --req-size=1"
+function Usage() {
+ echo "Usage:"
+ echo "$0 <trace-file> [recreate trace option]"
+ echo "option:"
+ echo "  0, no need to create new gem5 trace from qemu trace"
+ echo "  1, create new gem5 trace from qemu"
 
-# QEMU trace setup
-qemu_trace_dir="qemu_trace"
-qemu_trace_file_name="test.txt.bz2"
-qemu_trace_file="$qemu_trace_dir/$qemu_trace_file_name"
-
-gem5_qemu_trace="--qemu-trace=$qemu_trace_file"
-
-# log back up dir for each trace file
-log_backup_dir="$qemu_trace_file-m5out"
-
-
-
-debug_flags="Cache,TagController,CoherentXBar,DRAM,MemoryAccess,Checkpoint,TrafficGen"
-
-# Output handling
-out_console_sink="m5out/console.txt"
-out_stats="m5out/stats.txt"
-out_cfg="m5out/lat_mem_rd.cfg"
-out_config_ini="m5out/config.ini"
-out_config_json="m5out/config.json"
-out_total="m5out/lat_mem_rd.trc.gz-total.txt"
-
-gem5_stats_filter="qemu_trace/filter_stats.py"
-
-out_stats_filt="m5out/stats.txt.filt"
-out_console_grep="m5out/console-grep.md"
-
-backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_cfg"
-backup_file_list="$backup_file_list $out_config_ini $out_config_json"
-backup_file_list="$backup_file_list $out_total"
-
-# Done Configurable zones in this script
-##############################################
+}
 
 function dir_assert() {
   dir="$1"
@@ -73,10 +39,10 @@ function run_cmd() {
   if [ "$pipe_out" == '' ];then
    echo "no pipe out given"
    echo "$cmd"
-   $cmd
+  #  $cmd
   else
    echo "$cmd > $pipe_out 2>&1"
-   $cmd > "$pipe_out"  2>&1
+  #  $cmd > "$pipe_out"  2>&1
   fi
 }
 
@@ -113,6 +79,29 @@ function post_run {
 
 }
 
+
+# function backup_common {
+
+#     backup_dir="$1"
+
+#     # check log back dir, warning if exist
+#     if [ -d $backup_dir ]; then
+# 	    echo "copy commonly shared files into $backup_dir"
+#     else
+# 	    echo "Error: back dir: $backup_dir does not exist"
+# 	    exit 1
+#     fi
+
+#     dir_assert $backup_dir
+
+#     for item in $backup_file_list_common; do
+#       exist_assert $item
+#       run_cmd "cp -a $item $backup_dir/"
+#     done
+
+  
+# }
+
 function run_notag {
 
     init_trace=$1
@@ -130,10 +119,14 @@ function run_notag {
       echo "run_tag_incl: reuse trace"
       cmd="$cmd --reuse-trace"
 
+    else
+      echo "run_tag_excl: must give 0 or 1 as parameter"
     fi
+
     run_cmd "$cmd" "$pipe_out"
 
-    post_run "notag"
+    log_sub_dir="notag"
+    post_run "$log_sub_dir"
 
 }
 
@@ -154,12 +147,15 @@ function run_tag_excl {
 
       echo "run_tag_excl: reuse trace"
       cmd="$cmd --reuse-trace"
+
+    else
+      echo "run_tag_excl: must give 0 or 1 as parameter"
     fi
 
     run_cmd "$cmd" "$pipe_out"
 
-    post_run "tag_excl"
-
+    log_sub_dir="tag_excl"
+    post_run "$log_sub_dir"
 }
 
 
@@ -181,19 +177,112 @@ function run_tag_incl {
       echo "run_tag_incl: reuse trace"
       cmd="$cmd --reuse-trace"
 
+    else
+      echo "run_tag_incl: must give 0 or 1 as parameter"
     fi
 
     run_cmd "$cmd" "$pipe_out"
 
-    post_run "tag_incl"
+    log_sub_dir="tag_incl"
+    post_run "$log_sub_dir"
 
 }
 
+###########################################
+# Main entry of the program    ############
+###########################################
+# Get QEMU trace file as input
+# set a default value for trace file
+qemu_trace_file="qemu_trace/test.txt.bz2"
+create_new_trace="0"
+
+if [ "$1" == "" ]; then
+ echo "Error: must give an qemu trace file name"
+ Usage
+ exit 1
+else
+ qemu_trace_file="$1"
+ file_assert "$1"
+fi
+
+if [ "$2" == "1" ]; then
+ create_new_trace="1"
+elif [ "$2" == "0" ];then
+ create_new_trace="0"
+elif [ "$2" == "" ]; then
+ create_new_trace="0"
+else
+ echo "Error: second paramter not recognized."
+ Usage
+ exit 1
+fi
+ 
+
+#######################################
+# Configurable variables in this script
+#
+# Gem5 setup
+gem5_root="$HOME/lab/cheri/beri/tag-sim/gem5"
+gem5_bin="./build/X86/gem5.opt"
+gem5_config="configs/tupipa/replay_qemu_mem.py"
+
+gem5_qemu_trace="--qemu-trace=$qemu_trace_file"
+# will create a log back up dir for the trace file
+log_backup_dir="$qemu_trace_file-m5out"
+
+gem5_trace_file="$log_backup_dir/gem5.trc.gz"
+
+gem5_common_options="--mem-size=4096MB --req-size=1"
+gem5_common_options+=" --gem5-trace=$gem5_trace_file"
+
+debug_flags="Cache,TagController,CoherentXBar,DRAM,MemoryAccess,Checkpoint,TrafficGen"
+
+# Output handling
+out_console_sink="m5out/console.txt"
+out_stats="m5out/stats.txt"
+out_cfg="m5out/traffic-gen.cfg"
+out_config_ini="m5out/config.ini"
+out_config_json="m5out/config.json"
+
+out_gem5_trace_total="$gem5_trace_file-total.txt"
+
+gem5_stats_filter="qemu_trace/filter_stats.py"
+
+out_stats_filt="m5out/stats.txt.filt"
+out_console_grep="m5out/console-grep.md"
+
+backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_cfg"
+backup_file_list="$backup_file_list $out_config_ini $out_config_json"
+
+# backup_file_list_common="$out_gem5_trace_total"
+# backup_file_list_common+=" $gem5_trace_file"
+
+# Done Configurable zones in this script
+##############################################
+
 # check gem5 root dir
 
+dir_assert "$gem5_root"
 cd $gem5_root
-run_tag_excl 0
-run_tag_incl
-run_notag
 
+# check log backup dir
+# create if not exist
+if [ ! -d $log_backup_dir ]; then
+  # if log backup dir does not exist, 
+  # that means the gem5 trace also not created, so check we have
+  # 'create_new_trace' option on
+  if [ "create_new_trace" != "1" ];then
+     echo "Error: trace directory $log_backup_dir does not exist"
+     echo "So the create new trace option must be on (1)"
+     Usage
+     exit 1
+  fi
+  echo "creating log back dir: $log_backup_dir"
+  run_cmd "mkdir -p $log_backup_dir"
+fi
+
+run_tag_excl "$create_new_trace"
+run_tag_incl 0
+run_notag 0
+# backup_common "$log_backup_dir"
 

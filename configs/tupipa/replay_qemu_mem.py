@@ -102,6 +102,10 @@ parser.add_option("--mem-size", action="store", type="string",
 parser.add_option("--reuse-trace", action="store_true",
                   help="Prevent generation of traces and reuse existing")
 
+parser.add_option("--gem5-trace", action="store", type="string",
+                  default="m5out/lat_mem_rd.trc.gz",
+                  help="The Gem5 Trace file name to be generated or reused")
+
 parser.add_option("--enable-shadow-tags", action="store_true",
                   help="Enable tag cache for shadow memory at L3 layer.")
 
@@ -529,10 +533,9 @@ def load_trace_total_from_file(gem5_trace_file_name):
 
     return total_reqs
 
-cfg_file_name = os.path.join(m5.options.outdir, "lat_mem_rd.cfg")
+cfg_file_name = os.path.join(m5.options.outdir, "traffic-gen.cfg")
 
-gem5_trace_file_name = os.path.join(m5.options.outdir,
-                            'lat_mem_rd.trc.gz')
+gem5_trace_file_name = options.gem5_trace
 
 # check the gem5 trace, generate one if necessary.
 setup_gem5_trace(gem5_trace_file_name, max_range, burst_size, itt)
