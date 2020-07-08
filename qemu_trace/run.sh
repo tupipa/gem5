@@ -39,10 +39,10 @@ function run_cmd() {
   if [ "$pipe_out" == '' ];then
    echo "no pipe out given"
    echo "$cmd"
-  #  $cmd
+   eval $cmd
   else
    echo "$cmd > $pipe_out 2>&1"
-  #  $cmd > "$pipe_out"  2>&1
+   eval $cmd > "$pipe_out"  2>&1
   fi
 }
 
@@ -267,11 +267,11 @@ cd $gem5_root
 
 # check log backup dir
 # create if not exist
-if [ ! -d $log_backup_dir ]; then
+if [ ! -d "$log_backup_dir" ]; then
   # if log backup dir does not exist, 
   # that means the gem5 trace also not created, so check we have
   # 'create_new_trace' option on
-  if [ "create_new_trace" != "1" ];then
+  if [ "$create_new_trace" != "1" ];then
      echo "Error: trace directory $log_backup_dir does not exist"
      echo "So the create new trace option must be on (1)"
      Usage
