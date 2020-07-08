@@ -138,6 +138,10 @@ parser.add_option("--qemu-trace", action="store", type="string",
                   default="qemu_trace/test.txt.bz2",
                   help="Specify the qemu memory trace file")
 
+parser.add_option("--qemu-trace-is-txt", action="store_true",
+                  help="QEMU trace is in txt format")
+
+
 parser.add_option("--random-trace", action="store_true",
                   help="Use/generate random trace instead of QEMU trace")
 
@@ -282,13 +286,15 @@ def create_trace_from_qemu(filename, qemu_trace, max_addr, itt):
     # Parsing the request and convert into Gem5 Trace
     ######################################################
 
-    print("loading requests from qemu trace: ", qemu_trace)
+    print("loading qemu trace: ", qemu_trace)
 
     try:
-      qemu_trace_in = bz2.BZ2File(qemu_trace, 'r')
-    #   qemu_trace_in = open(qemu_trace, 'r')
+     if options.qemu_trace_is_txt:
+        qemu_trace_in = open(qemu_trace, 'r')
+     else:
+        qemu_trace_in = bz2.BZ2File(qemu_trace, 'r')
     except:
-        print("Failed to open bz2 file: ", qemu_trace, " for reading")
+        print("Failed to open qemu trace file: ", qemu_trace, " for reading")
         exit(-1)
 
     print("qemu_trace file opened: ", qemu_trace)

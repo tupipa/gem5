@@ -9,7 +9,8 @@ function Usage() {
 
  echo "option:"
  echo "  0, no need to create new gem5 trace from qemu trace"
- echo "  1, create new gem5 trace from qemu"
+ echo "  1, create new gem5 trace from qemu (with bzip2 qemu trace)"
+ echo "  2, create new gem5 trace from qemu (with txt qemu trace)"
 
 }
 
@@ -62,9 +63,21 @@ function post_run {
     subdir="$1"
 
     backup_dir="$log_backup_dir/$subdir"
-
+    grep_str="======================="
     run_cmd "python $gem5_stats_filter $out_stats" "$out_stats_filt"
-    run_cmd "grep -a200 '=====================' $out_console_sink" "$out_console_grep"
+    run_cmd "grep -a200 '$grep_str' $out_console_sink" "$out_console_grep"
+
+    # check the console output grep result,
+    # if no three lines of iteration pattern '======'
+    # probably an error, stop here
+    lines=$(grep '$grep_str' $out_console_grep | wc -l)
+    if [ "$lines" -lt "3" ];then
+	   echo "$out_console_grep has less than 3 iterations"
+	   echo "Error occured during gem5 execution, please check"
+	   exit 1
+    else
+	   echo "Gem5 succeed, now collecting data and backup to $backup_dir"
+    fi 
 
     # check log back dir, warning if exist
     if [ -d $backup_dir ]; then
@@ -113,25 +126,31 @@ function run_notag {
     cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
 
     pipe_out="$out_console_sink"
+    
+    func="run_notag"
 
-    # add reuse-trace option according to $1
+    echo "----- $func begin ---------"
+
+    # add reuse-trace and qemu-trace format option according to $1
     if [ "$init_trace" == "1" ];then
-      echo "run_tag_incl: will create new trace from QEMU input"
-
+      echo "$func: will create new trace from bzip2 QEMU trace file"
+    elif [ "$init_trace" == "2" ];then
+      echo "$func: will create new trace from txt QEMU trace file"
+      cmd+=" --qemu-trace-is-txt"
     elif [ "$init_trace" == "0" ];then
-
-      echo "run_tag_incl: reuse trace"
+      echo "$func: will reuse qemu trace"
       cmd="$cmd --reuse-trace"
-
     else
-      echo "run_tag_excl: must give 0 or 1 as parameter"
+      echo "$func: must give 0, 1 or 2 as parameter"
     fi
+
 
     run_cmd "$cmd" "$pipe_out"
 
     log_sub_dir="notag"
     post_run "$log_sub_dir"
 
+    echo "-----run_notag done ---------"
 }
 
 function run_tag_excl {
@@ -143,17 +162,21 @@ function run_tag_excl {
 
     pipe_out="$out_console_sink"
 
-    # add reuse-trace option according to $1
+    func="run_tag_excl"
+
+    echo "----- $func begin ---------"
+
+    # add reuse-trace and qemu-trace format option according to $1
     if [ "$init_trace" == "1" ];then
-      echo "run_tag_excl: will create new trace from QEMU input"
-
+      echo "$func: will create new trace from bzip2 QEMU trace file"
+    elif [ "$init_trace" == "2" ];then
+      echo "$func: will create new trace from txt QEMU trace file"
+      cmd+=" --qemu-trace-is-txt"
     elif [ "$init_trace" == "0" ];then
-
-      echo "run_tag_excl: reuse trace"
+      echo "$func: will reuse qemu trace"
       cmd="$cmd --reuse-trace"
-
     else
-      echo "run_tag_excl: must give 0 or 1 as parameter"
+      echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
     run_cmd "$cmd" "$pipe_out"
@@ -172,17 +195,21 @@ function run_tag_incl {
 
     pipe_out="$out_console_sink"
 
-    # add reuse-trace option according to $1
+    func="run_tag_incl"
+
+    echo "----- $func begin ---------"
+
+    # add reuse-trace and qemu-trace format option according to $1
     if [ "$init_trace" == "1" ];then
-      echo "run_tag_incl: will create new trace from QEMU input"
-
+      echo "$func: will create new trace from bzip2 QEMU trace file"
+    elif [ "$init_trace" == "2" ];then
+      echo "$func: will create new trace from txt QEMU trace file"
+      cmd+=" --qemu-trace-is-txt"
     elif [ "$init_trace" == "0" ];then
-
-      echo "run_tag_incl: reuse trace"
+      echo "$func: will reuse qemu trace"
       cmd="$cmd --reuse-trace"
-
     else
-      echo "run_tag_incl: must give 0 or 1 as parameter"
+      echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
     run_cmd "$cmd" "$pipe_out"
@@ -200,6 +227,7 @@ function run_tag_incl {
 qemu_trace_file="qemu_trace/test.txt.bz2"
 create_new_trace="0"
 
+
 if [ "$1" == "" ]; then
  echo "Error: must give an qemu trace file name"
  Usage
@@ -215,6 +243,8 @@ elif [ "$2" == "0" ];then
  create_new_trace="0"
 elif [ "$2" == "" ]; then
  create_new_trace="0"
+elif [ "$2" == "2" ]; then
+ create_new_trace="2"
 else
  echo "Error: second paramter not recognized."
  Usage
@@ -275,7 +305,7 @@ if [ ! -d "$log_backup_dir" ]; then
   # if log backup dir does not exist, 
   # that means the gem5 trace also not created, so check we have
   # 'create_new_trace' option on
-  if [ "$create_new_trace" != "1" ];then
+  if [ "$create_new_trace" == "0" ];then
      echo "Error: trace directory $log_backup_dir does not exist"
      echo "So the create new trace option must be on (1)"
      Usage
