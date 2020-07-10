@@ -86,7 +86,7 @@ function post_run {
     run_cmd "python $gem5_stats_filter $out_stats" "$out_stats_filt"
     if [ "$has_zip" == "gzip" ] ; then
       echo "$func: gzip output console sink for grep"
-      run_cmd "cat $out_console_sink | gzip -d | tee >( tail -100 > $out_console_tail) | grep -a200 '$grep_str'" "$out_console_grep"
+      run_cmd "cat $out_console_sink | gzip -d | tee >( tail -$tail_lines > $out_console_tail) | grep -a200 '$grep_str'" "$out_console_grep"
     elif [ "$has_zip" == "bz2" ] ; then
       echo "$func: bz2 output console sink for grep"
       run_cmd "bzip2 -k -d -c $out_console_sink | grep -a200 '$grep_str'" "$out_console_grep"
@@ -295,6 +295,7 @@ gem5_stats_filter="qemu_trace/filter_stats.py"
 out_stats_filt="m5out/stats.txt.filt"
 out_console_grep="m5out/console-grep.md"
 out_console_tail="m5out/console-tail.md"
+tail_lines="1000"
 
 backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_console_tail $out_cfg"
 backup_file_list="$backup_file_list $out_config_ini $out_config_json"
