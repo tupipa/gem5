@@ -41,13 +41,23 @@ function exist_assert() {
 function run_cmd() {
   cmd="$1"
   pipe_out="$2"
+  has_zip="$3"
   if [ "$pipe_out" == '' ];then
-   echo "no pipe out given"
+   #echo "no pipe out given"
    echo "$cmd"
    eval $cmd
+  elif [ "$has_zip" == "gzip" ] ; then
+   echo "gzip the console output:"
+   echo "$cmd 2>&1 | gzip > $pipe_out"
+   eval $cmd 2>&1 | gzip > "$pipe_out"
+  elif [ "$has_zip" == "bz2" ] ; then
+   echo "bzip2 the console output:"
+   echo "$cmd 2>&1 | bzip2 > $pipe_out"
+   eval $cmd 2>&1 | bzip2 > "$pipe_out"
   else
+   echo "console output as plain txt file:"
    echo "$cmd > $pipe_out 2>&1"
-   eval $cmd > "$pipe_out"  2>&1
+   eval $cmd > $pipe_out 2>&1
   fi
 }
 
@@ -62,10 +72,18 @@ function post_run {
     # a subdirectory must be given to store the output stats
     subdir="$1"
 
+    has_zip="$2"
+
     backup_dir="$log_backup_dir/$subdir"
     grep_str="======================="
     run_cmd "python $gem5_stats_filter $out_stats" "$out_stats_filt"
-    run_cmd "grep -a200 '$grep_str' $out_console_sink" "$out_console_grep"
+    if [ "$has_zip" == "gzip" ] ; then
+      run_cmd "cat $out_console_sink | gzip -d | grep -a200 '$grep_str'" "$out_console_grep"
+    elif [ "$has_zip" == "bz2" ] ; then
+      run_cmd "bzip2 -k -d -c $out_console_sink | grep -a200 '$grep_str'" "$out_console_grep"
+    else
+      run_cmd "grep -a200 '$grep_str' $out_console_sink" "$out_console_grep"
+    fi
 
     # check the console output grep result,
     # if no three lines of iteration pattern '======'
@@ -122,10 +140,10 @@ function run_notag {
     fi
 
 
-    run_cmd "$cmd" "$pipe_out"
+    run_cmd "$cmd" "$pipe_out" "gzip"
 
     log_sub_dir="notag"
-    post_run "$log_sub_dir"
+    post_run "$log_sub_dir" "gzip"
 
     echo "-----run_notag done ---------"
 }
@@ -156,10 +174,10 @@ function run_tag_excl {
       echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
-    run_cmd "$cmd" "$pipe_out"
+    run_cmd "$cmd" "$pipe_out" "gzip"
 
     log_sub_dir="tag_excl"
-    post_run "$log_sub_dir"
+    post_run "$log_sub_dir" "gzip"
 }
 
 
@@ -189,10 +207,10 @@ function run_tag_incl {
       echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
-    run_cmd "$cmd" "$pipe_out"
+    run_cmd "$cmd" "$pipe_out" "gzip"
 
     log_sub_dir="tag_incl"
-    post_run "$log_sub_dir"
+    post_run "$log_sub_dir" "gzip"
 
 }
 
@@ -249,7 +267,7 @@ gem5_common_options+=" --gem5-trace=$gem5_trace_file"
 debug_flags="Cache,TagController,CoherentXBar,DRAM,MemoryAccess,Checkpoint,TrafficGen"
 
 # Output handling
-out_console_sink="m5out/console.txt"
+out_console_sink="m5out/console.txt.gz"
 out_stats="m5out/stats.txt"
 out_cfg="m5out/traffic-gen.cfg"
 out_config_ini="m5out/config.ini"
