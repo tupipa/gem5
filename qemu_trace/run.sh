@@ -15,7 +15,7 @@ function Usage() {
 }
 
 function dir_assert() {
-  dir="$1"
+  local dir="$1"
   if [ ! -d "$dir" ];then
     echo "Error: $dir is not a directory or does not exists"
     exit 1
@@ -23,7 +23,7 @@ function dir_assert() {
 }
 
 function file_assert() {
-  file="$1"
+  local file="$1"
   if [ ! -f $file ] ; then
 	  echo "Error: $file is not a file or does not exist"
 	  exit 1
@@ -31,7 +31,7 @@ function file_assert() {
 }
 
 function exist_assert() {
-  file="$1"
+  local file="$1"
   if [ ! -e $file ] ; then
 	  echo "Error: $file does not exist"
 	  exit 1
@@ -39,23 +39,25 @@ function exist_assert() {
 }
 
 function run_cmd() {
-  cmd="$1"
-  pipe_out="$2"
-  has_zip="$3"
+  local cmd="$1"
+  local pipe_out="$2"
+  local has_zip="$3"
+  local func="run_cmd"
+
   if [ "$pipe_out" == '' ];then
    #echo "no pipe out given"
    echo "$cmd"
    eval $cmd
   elif [ "$has_zip" == "gzip" ] ; then
-   echo "gzip the console output:"
+   echo "$func: gzip the console output:"
    echo "$cmd 2>&1 | gzip > $pipe_out"
    eval $cmd 2>&1 | gzip > "$pipe_out"
   elif [ "$has_zip" == "bz2" ] ; then
-   echo "bzip2 the console output:"
+   echo "$func: bzip2 the console output:"
    echo "$cmd 2>&1 | bzip2 > $pipe_out"
    eval $cmd 2>&1 | bzip2 > "$pipe_out"
   else
-   echo "console output as plain txt file:"
+   echo "$func: console output as plain txt file:"
    echo "$cmd > $pipe_out 2>&1"
    eval $cmd > $pipe_out 2>&1
   fi
@@ -70,32 +72,31 @@ function run_cmd() {
 function post_run {
 
     # a subdirectory must be given to store the output stats
-    subdir="$1"
+    local subdir="$1"
 
-    has_zip="$2"
+    local has_zip="$2"
 
-    backup_dir="$log_backup_dir/$subdir"
-    grep_str="======================="
+    local func="post_run"
+
+    echo "$func: got parameters: $subdir, $has_zip"
+
+    local backup_dir="$log_backup_dir/$subdir"
+    local grep_str="======================="
+
     run_cmd "python $gem5_stats_filter $out_stats" "$out_stats_filt"
     if [ "$has_zip" == "gzip" ] ; then
-      run_cmd "cat $out_console_sink | gzip -d | grep -a200 '$grep_str'" "$out_console_grep"
+      echo "$func: gzip output console sink for grep"
+      run_cmd "cat $out_console_sink | gzip -d | tee >( tail -100 > $out_console_tail) | grep -a200 '$grep_str'" "$out_console_grep"
     elif [ "$has_zip" == "bz2" ] ; then
+      echo "$func: bz2 output console sink for grep"
       run_cmd "bzip2 -k -d -c $out_console_sink | grep -a200 '$grep_str'" "$out_console_grep"
-    else
+    elif [ "$has_zip" == "" ] ; then
+      echo "$func: plain txt console sink for grep"
       run_cmd "grep -a200 '$grep_str' $out_console_sink" "$out_console_grep"
-    fi
-
-    # check the console output grep result,
-    # if no three lines of iteration pattern '======'
-    # probably an error, stop here
-    lines=$(eval "grep '$grep_str' $out_console_grep" | wc -l)
-    if [ "$lines" -lt "3" ];then
-        echo "$out_console_grep has $lines (less than 3) iterations"
-        echo "Error occured during gem5 execution, please check"
-        exit 1
     else
-	echo "Gem5 succeed ($lines iter lines), now collecting data and backup to $backup_dir"
-    fi 
+      echo "$func: unknown second (has_zip) option: $has_zip"
+      exit 1
+    fi
 
     # check log back dir, warning if exist
     if [ -d $backup_dir ]; then
@@ -112,17 +113,30 @@ function post_run {
       run_cmd "cp -a $item $backup_dir/"
     done
 
+    # check the console output grep result,
+    # if no three lines of iteration pattern '======'
+    # probably an error, stop here
+    local lines=$(eval "grep '$grep_str' $out_console_grep" | wc -l)
+    if [ "$lines" -lt "3" ];then
+        echo "$out_console_grep has $lines (less than 3) iterations"
+        echo "Error occured during gem5 execution, please check"
+        exit 1
+    else
+	echo "Gem5 succeed ($lines iter lines), now collecting data and backup to $backup_dir"
+    fi 
+
+
 }
 
 function run_notag {
 
-    init_trace=$1
+    local init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
+    local cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
 
-    pipe_out="$out_console_sink"
+    local pipe_out="$out_console_sink"
     
-    func="run_notag"
+    local func="run_notag"
 
     echo "----- $func begin ---------"
 
@@ -142,7 +156,7 @@ function run_notag {
 
     run_cmd "$cmd" "$pipe_out" "gzip"
 
-    log_sub_dir="notag"
+    local log_sub_dir="notag"
     post_run "$log_sub_dir" "gzip"
 
     echo "-----run_notag done ---------"
@@ -150,14 +164,14 @@ function run_notag {
 
 function run_tag_excl {
 
-    init_trace=$1
+    local init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
+    local cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
     cmd="$cmd --enable-shadow-tags"
 
-    pipe_out="$out_console_sink"
+    local pipe_out="$out_console_sink"
 
-    func="run_tag_excl"
+    local func="run_tag_excl"
 
     echo "----- $func begin ---------"
 
@@ -174,23 +188,24 @@ function run_tag_excl {
       echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
-    run_cmd "$cmd" "$pipe_out" "gzip"
+    #run_cmd "$cmd" "$pipe_out" "gzip"
 
-    log_sub_dir="tag_excl"
+    local log_sub_dir="tag_excl"
     post_run "$log_sub_dir" "gzip"
+    #exit 1
 }
 
 
 function run_tag_incl {
 
-    init_trace=$1
+    local init_trace=$1
 
-    cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
+    local cmd="$gem5_bin --debug-flags=$debug_flags $gem5_config $gem5_common_options $gem5_qemu_trace"
     cmd="$cmd --enable-shadow-tags --tagcache-inclusive"
 
-    pipe_out="$out_console_sink"
+    local pipe_out="$out_console_sink"
 
-    func="run_tag_incl"
+    local func="run_tag_incl"
 
     echo "----- $func begin ---------"
 
@@ -209,7 +224,7 @@ function run_tag_incl {
 
     run_cmd "$cmd" "$pipe_out" "gzip"
 
-    log_sub_dir="tag_incl"
+    local log_sub_dir="tag_incl"
     post_run "$log_sub_dir" "gzip"
 
 }
@@ -279,8 +294,9 @@ gem5_stats_filter="qemu_trace/filter_stats.py"
 
 out_stats_filt="m5out/stats.txt.filt"
 out_console_grep="m5out/console-grep.md"
+out_console_tail="m5out/console-tail.md"
 
-backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_cfg"
+backup_file_list="$out_stats $out_stats_filt $out_console_grep $out_console_tail $out_cfg"
 backup_file_list="$backup_file_list $out_config_ini $out_config_json"
 
 # backup_file_list_common="$out_gem5_trace_total"
