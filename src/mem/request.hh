@@ -292,7 +292,13 @@ class Request
      * paddr is written via setVirt() or a phys basec constructor, so it is
      * always valid as long as one of the address fields is valid.
      */
+
     unsigned _size = 0;
+
+    /**
+     * The color of the address. Optional field for the packet.
+     */
+    Addr _instColor = 0;
 
     /** Byte-enable mask for writes. */
     std::vector<bool> _byteEnable;
@@ -545,6 +551,19 @@ class Request
     {
         assert(privateFlags.isSet(VALID_SIZE));
         return _size;
+    }
+    /**
+     * Accessor for color.
+     */
+    Addr
+    getInstColor() const
+    {
+        return _instColor;
+    }
+    void
+    setInstColor(Addr instColor)
+    {
+        _instColor = instColor;
     }
 
     const std::vector<bool>&

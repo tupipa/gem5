@@ -194,12 +194,21 @@ BaseTrafficGen::update()
         // device accesses that could be part of a trace
         if (pkt && system->isMemAddr(pkt->getAddr())) {
             stats.numPackets++;
+            DPRINTF(TrafficGen, "A new mem packet: packet %s 0x%x\n",
+                    pkt->cmdString(), pkt->getAddr());
             // Only attempts to send if not blocked by pending responses
             blockedWaitingResp = allocateWaitingRespSlot(pkt);
+
+            DPRINTF(TrafficGen, "maxOutstandingReqs: %d,"
+                "watingResp.size: %d\n",
+                maxOutstandingReqs, waitingResp.size());
             if (blockedWaitingResp || !port.sendTimingReq(pkt)) {
+                DPRINTF(TrafficGen, "packet blocked, will retry\n");
                 retryPkt = pkt;
                 retryPktTick = curTick();
             }
+            DPRINTF(TrafficGen, "done handling a mem packet\n");
+
         } else if (pkt) {
             DPRINTF(TrafficGen, "Suppressed packet %s 0x%x\n",
                     pkt->cmdString(), pkt->getAddr());

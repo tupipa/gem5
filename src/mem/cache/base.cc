@@ -913,6 +913,11 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
     // Read requester(s) to have buffered the ReadEx snoop and to
     // invalidate their blocks after receiving them.
     // assert(!pkt->needsWritable() || blk->isWritable());
+    DPRINTF(Cache, "pkt->getOffset(0x%lx):0x%lx,pkt->getSize(): 0x%lx,"
+                   "blkSize: 0x%lx\n"
+                    , blkSize, pkt->getOffset(blkSize), pkt->getSize(),
+                    blkSize);
+
     assert(pkt->getOffset(blkSize) + pkt->getSize() <= blkSize);
 
     // Check RMW operations first since both isRead() and

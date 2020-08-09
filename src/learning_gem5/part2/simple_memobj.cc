@@ -64,6 +64,8 @@ SimpleMemobj::CPUSidePort::sendPacket(PacketPtr pkt)
 
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
 
+    DPRINTF(SimpleMemobj,
+            "Sending packet to CPUSidePort. %#x\n", pkt->getAddr());
     // If we can't send the packet across the port, store it for later.
     if (!sendTimingResp(pkt)) {
         blockedPacket = pkt;
@@ -116,6 +118,8 @@ SimpleMemobj::CPUSidePort::recvRespRetry()
     PacketPtr pkt = blockedPacket;
     blockedPacket = nullptr;
 
+    DPRINTF(SimpleMemobj, "Re-send the response to CPUSidePort %#x\n",
+                    pkt->getAddr());
     // Try to resend it. It's possible that it fails again.
     sendPacket(pkt);
 }
@@ -127,6 +131,9 @@ SimpleMemobj::MemSidePort::sendPacket(PacketPtr pkt)
 
     panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
 
+    DPRINTF(SimpleMemobj, "Sending TimingRequest to MemSidePort %#x\n",
+                    pkt->getAddr());
+
     // If we can't send the packet across the port, store it for later.
     if (!sendTimingReq(pkt)) {
         blockedPacket = pkt;
@@ -136,6 +143,10 @@ SimpleMemobj::MemSidePort::sendPacket(PacketPtr pkt)
 bool
 SimpleMemobj::MemSidePort::recvTimingResp(PacketPtr pkt)
 {
+
+    DPRINTF(SimpleMemobj, "Get a response from MemSidePort %#x, packet:%s\n",
+                    pkt->getAddr(), pkt->print());
+
     // Just forward to the memobj.
     return owner->handleResponse(pkt);
 }

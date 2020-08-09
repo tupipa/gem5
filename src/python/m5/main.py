@@ -44,6 +44,8 @@ import os
 import socket
 import sys
 
+from dateutil.tz import *
+
 __all__ = [ 'options', 'arguments', 'main' ]
 
 usage="%prog [gem5 options] script.py [script options]"
@@ -332,6 +334,10 @@ def main(*args):
         options.usage(2)
 
     verbose = options.verbose - options.quiet
+
+    # Lele: print the current time
+    print("current time: %s" % datetime.datetime.now(tzlocal()))
+
     if verbose >= 0:
         print("gem5 Simulator System.  http://gem5.org")
         print(brief_copyright)

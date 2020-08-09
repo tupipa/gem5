@@ -80,6 +80,8 @@ TraceGen::InputStream::read(TraceElement& element)
         element.blocksize = pkt_msg.size();
         element.tick = pkt_msg.tick();
         element.flags = pkt_msg.has_flags() ? pkt_msg.flags() : 0;
+        element.inst_color =
+            pkt_msg.has_inst_color() ? pkt_msg.inst_color() : 0;
         return true;
     }
 
@@ -116,6 +118,7 @@ TraceGen::enter()
     // update the trace offset to the time where the state was entered.
     tickOffset = curTick();
 
+    DPRINTF(TrafficGen, "TraceGen::enter: new tickOffset %d \n",tickOffset);
     // clear everything
     currElement.clear();
 
@@ -137,22 +140,27 @@ TraceGen::getNextPacket()
     // always have a valid element here
     assert(currElement.isValid());
 
-    DPRINTF(TrafficGen, "TraceGen::getNextPacket: %c %d %d %d 0x%x\n",
+    DPRINTF(TrafficGen, "TraceGen::getNextPacket: %c 0x%x %d 0x%x %d 0x%x\n",
             currElement.cmd.isRead() ? 'r' : 'w',
             currElement.addr,
             currElement.blocksize,
+            currElement.inst_color,
             currElement.tick,
             currElement.flags);
 
     PacketPtr pkt = getPacket(currElement.addr + addrOffset,
                               currElement.blocksize,
                               currElement.cmd, currElement.flags);
+    // Lele: set the color of the requested addr.
+    pkt->req->setInstColor(currElement.inst_color);
 
     if (!traceComplete)
-        DPRINTF(TrafficGen, "nextElement: %c addr %d size %d tick %d (%d)\n",
+        DPRINTF(TrafficGen, "nextElement: %c addr %d size %d "
+                            "color 0x%x tick %d (%d)\n",
                 nextElement.cmd.isRead() ? 'r' : 'w',
                 nextElement.addr,
                 nextElement.blocksize,
+                nextElement.inst_color,
                 nextElement.tick + tickOffset,
                 nextElement.tick);
 
@@ -170,6 +178,7 @@ TraceGen::exit()
              name());
     }
 
+    DPRINTF(TrafficGen, "TraceGen::exit: start over again\n");
     // Clear any flags and start over again from the beginning of the
     // file
     trace.reset();

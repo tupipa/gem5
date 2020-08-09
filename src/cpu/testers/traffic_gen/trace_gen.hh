@@ -74,6 +74,9 @@ class TraceGen : public BaseGen
         /** The size of the access for the request */
         Addr blocksize;
 
+        /** The color-tag of the pc */
+        Addr inst_color;
+
         /** The time at which the request should be sent */
         Tick tick;
 
