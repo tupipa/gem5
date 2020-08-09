@@ -188,7 +188,7 @@ function run_tag_excl {
       echo "$func: must give 0, 1 or 2 as parameter"
     fi
 
-    #run_cmd "$cmd" "$pipe_out" "gzip"
+    run_cmd "$cmd" "$pipe_out" "gzip"
 
     local log_sub_dir="tag_excl"
     post_run "$log_sub_dir" "gzip"
